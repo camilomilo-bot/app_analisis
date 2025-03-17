@@ -6,38 +6,70 @@ import os
 import time
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import RobustScaler
+from openpyxl import load_workbook
+import io
 
 df_principal = None
 df_secundaria = None
 
-UPLOAD_FOLDER = "uploads"
+UPLOAD_FOLDER = "/tmp/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def cargar_archivo(uploaded_file, filename):
     if uploaded_file is not None:
-        df = pd.read_excel(uploaded_file, dtype=str)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        df.to_parquet(file_path, index=False)
-        return file_path
+        try:
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            
+            # Convertir `uploaded_file` a BytesIO para evitar problemas de lectura
+            file_bytes = io.BytesIO(uploaded_file.getvalue())
+
+            # Cargar el archivo con openpyxl
+            wb = load_workbook(file_bytes, read_only=True)
+            ws = wb.active
+            
+            # Verificar si la hoja tiene datos
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows or len(rows) < 2:
+                raise ValueError("El archivo está vacío o no tiene suficientes datos.")
+
+            # Leer nombres de columnas
+            columns = list(rows[0])  # Primera fila como nombres de columnas
+            
+            # Leer los datos en bloques de 5000 filas
+            chunk_size = 5000
+            chunk_list = [pd.DataFrame(rows[i:i+chunk_size], columns=columns) for i in range(1, len(rows), chunk_size)]
+            
+            # Concatenar todo
+            df = pd.concat(chunk_list, ignore_index=True)
+            
+            # Guardar en Parquet
+            df.to_parquet(file_path, index=False, engine="pyarrow")
+            
+            return file_path
+
+        except Exception as e:
+            print(f"Error al procesar el archivo: {e}")
+            return None
+        
     return None
 
 def crear_base_principal():
 
     # Cargar archivos con Dask en formato Parquet
-    df_nits = dd.read_parquet("uploads/BaseSecundaria.parquet")
-    df_datos = dd.read_parquet("BasePrincipal.parquet")
+    df_nits = dd.read_parquet("/tmp/uploads/BaseSecundaria.parquet")
+    df_datos = dd.read_parquet("/tmp/BasePrincipal.parquet")
     # Filtrar los NITs presentes en la base grande
     df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
 
     # Guardar el resultado en formato Parquet
-    df_sin_nits.to_parquet("BasePrincipalSNIT.parquet", write_index=False)
+    df_sin_nits.to_parquet("/tmp/BasePrincipalSNIT.parquet", write_index=False)
 
     print("Archivo base_sin_nits.parquet creado exitosamente.")
 
 def completar_nits():
     # Cargar los archivos (ahora ambos en formato Parquet)
-    archivo_nits = "uploads/BaseSecundaria.parquet"  # Archivo con solo NITs
-    archivo_datos = "BasePrincipal.parquet"  # Ahora en formato Parquet
+    archivo_nits = "/tmp/uploads/BaseSecundaria.parquet"  # Archivo con solo NITs
+    archivo_datos = "/tmp/BasePrincipal.parquet"  # Ahora en formato Parquet
 
      # Leer el archivo de NITs y mostrar las columnas disponibles
     df_nits = pd.read_parquet(archivo_nits)
@@ -52,13 +84,13 @@ def completar_nits():
     df_filtrado = df_datos[df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
 
     # Guardar el resultado en formato Parquet
-    df_filtrado.to_parquet("uploads/BaseSecundaria.parquet", index=False)
+    df_filtrado.to_parquet("/tmp/uploads/BaseSecundaria.parquet", index=False)
 
     print("Archivo BaseSecundaria.parquet creado exitosamente.")
 
 def modelo_principal_sec(filtrar_ciiu=True):
-    base_secundaria = dd.read_parquet("uploads/BaseSecundaria.parquet")
-    base_principal = dd.read_parquet("BasePrincipalSNIT.parquet")
+    base_secundaria = dd.read_parquet("/tmp/uploads/BaseSecundaria.parquet")
+    base_principal = dd.read_parquet("/tmp/BasePrincipalSNIT.parquet")
     
 
     # 📌 Convertir nombres de columnas a minúsculas
