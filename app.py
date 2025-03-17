@@ -17,40 +17,10 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def cargar_archivo(uploaded_file, filename):
     if uploaded_file is not None:
-        try:
-            file_path = os.path.join(UPLOAD_FOLDER, filename)
-            
-            # Convertir `uploaded_file` a BytesIO para evitar problemas de lectura
-            file_bytes = io.BytesIO(uploaded_file.getvalue())
-
-            # Cargar el archivo con openpyxl
-            wb = load_workbook(file_bytes, read_only=True)
-            ws = wb.active
-            
-            # Verificar si la hoja tiene datos
-            rows = list(ws.iter_rows(values_only=True))
-            if not rows or len(rows) < 2:
-                raise ValueError("El archivo está vacío o no tiene suficientes datos.")
-
-            # Leer nombres de columnas
-            columns = list(rows[0])  # Primera fila como nombres de columnas
-            
-            # Leer los datos en bloques de 5000 filas
-            chunk_size = 5000
-            chunk_list = [pd.DataFrame(rows[i:i+chunk_size], columns=columns) for i in range(1, len(rows), chunk_size)]
-            
-            # Concatenar todo
-            df = pd.concat(chunk_list, ignore_index=True)
-            
-            # Guardar en Parquet
-            df.to_parquet(file_path, index=False, engine="pyarrow")
-            
-            return file_path
-
-        except Exception as e:
-            print(f"Error al procesar el archivo: {e}")
-            return None
-        
+        df = pd.read_excel(uploaded_file, dtype=str)
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        df.to_parquet(file_path, index=False)
+        return file_path
     return None
 
 def crear_base_principal():
