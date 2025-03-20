@@ -57,6 +57,10 @@ def subir_df_a_blob(df, blob_name):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al subir archivo: {e}")
 
+@app.get("/")
+def home():
+    return {"message": "Microbackend de data base y com_nits funcionando"}
+
 @app.post("/crear_base_principal/")
 async def crear_base_principal():
     """Genera una base principal sin NITs repetidos y la guarda en Azure."""
