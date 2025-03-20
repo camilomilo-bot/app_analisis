@@ -105,6 +105,10 @@ def modelo_principal_sec():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al ejecutar modelo: {e}")
 
+@app.get("/")
+def home():
+    return {"message": "Microbackend de reconomendacion funcionando"}
+
 @app.get("/generar_recomendaciones/")
 async def generar_recomendaciones():
     """Ejecuta el modelo y devuelve un archivo CSV con las recomendaciones."""
