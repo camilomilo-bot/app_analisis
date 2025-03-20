@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import dask.dataframe as dd
 import os
 import time
 from dotenv import load_dotenv
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import RobustScaler
 from azure.storage.blob import BlobServiceClient
+import re
+import io
 
 load_dotenv()
 
@@ -16,10 +17,15 @@ df_secundaria = None
 
 blob_service_client = BlobServiceClient.from_connection_string(os.getenv("CONNECTION_STRING"))
 
-container_name = "mis-archivos"
+container_name = "mis-archivos"  
 
+def extraer_numeros_ciiu(codigo):
+    """ Extrae solo los números del código CIIU """
+    if isinstance(codigo, str):
+        match = re.search(r'\d+', codigo)  # Busca la primera secuencia numérica
+        return match.group(0) if match else None
+    return None
 
-import io
 
 def subir_df_a_blob(df, blob_name):
     """Convierte un DataFrame a Parquet y lo sube directamente a Azure Blob Storage"""
@@ -45,16 +51,12 @@ def descargar_df_desde_blob(blob_name):
         # Convertir de Parquet a DataFrame
         df = pd.read_parquet(stream)
         
-        st.success(f"Archivo '{blob_name}' descargado y cargado en un DataFrame.")
+
         return df
     except Exception as e:
         st.error(f"Error al descargar archivo: {e}")
         return None
 
-
-
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def cargar_archivo(uploaded_file, filename):
     """Lee un archivo Excel, lo convierte a Parquet en memoria y lo sube a Azure Blob Storage."""
@@ -115,13 +117,10 @@ def completar_nits():
     # Subir el archivo filtrado a Azure Blob Storage
     result = subir_df_a_blob(df=df_filtrado, blob_name="BaseSecundaria.parquet")
 
-
-
-def modelo_principal_sec(filtrar_ciiu=True, recomendar_mas=False):
+def modelo_principal_sec():
   
     base_secundaria = descargar_df_desde_blob("BaseSecundaria.parquet")
     base_principal = descargar_df_desde_blob("BasePrincipalSNIT.parquet")
-    
 
     # 📌 Convertir nombres de columnas a minúsculas
     base_secundaria = base_secundaria.rename(columns=str.lower)
@@ -132,110 +131,48 @@ def modelo_principal_sec(filtrar_ciiu=True, recomendar_mas=False):
         base_secundaria[col] = pd.to_numeric(base_secundaria[col], errors="coerce").fillna(0)
         base_principal[col] = pd.to_numeric(base_principal[col], errors="coerce").fillna(0)
     
-    #base_secundaria = base_secundaria.compute()
-    #base_principal = base_principal.compute()
-    
     scaler = RobustScaler()
     clientes_base_secundaria = scaler.fit_transform(base_secundaria[["patrimonio", "personal"]])
     clientes_base_principal = scaler.transform(base_principal[["patrimonio", "personal"]])
     
     distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
     # Obtener los tres mejores índices ordenados por menor distancia
-    mejores_indices = np.argsort(distancias, axis=1)[:, :3]  # Tomamos los 3 mejores
+    mejores_indices = np.argmin(distancias, axis=1)
     
-
-    if(recomendar_mas):
-
-        # Creación del DataFrame resultados
-        resultados = pd.DataFrame({
+    resultados = pd.DataFrame({
         "Identificacion": base_principal["identificacion"],
         "EMPRESA": base_principal["empresa"],
         "Patrimonio": base_principal["patrimonio"],
         "Personal": base_principal["personal"],
         "Codigo_CIIU": base_principal["codigo_ciiu"],
+        "Distancia": distancias[np.arange(len(base_principal)), mejores_indices],
 
         # Mejor oferta
-        "Identificacion_cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["identificacion"].values,
-        "EMPRESA_Cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["empresa"].values,
-        "Patrimonio_cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["patrimonio"].values,
-        "Personal_cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["personal"].values,
-        "Codigo_CIIU_Cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["codigo_ciiu"].values,
-        "Distancia_1": distancias[np.arange(len(base_principal)), mejores_indices[:, 0]],
-
-        # Segunda mejor oferta
-        "Identificacion_cliente_2": base_secundaria.iloc[mejores_indices[:, 1]]["identificacion"].values,
-        "EMPRESA_Cliente_2": base_secundaria.iloc[mejores_indices[:, 1]]["empresa"].values,
-        "Patrimonio_cliente_2": base_secundaria.iloc[mejores_indices[:, 1]]["patrimonio"].values,
-        "Personal_cliente_2": base_secundaria.iloc[mejores_indices[:, 1]]["personal"].values,
-        "Codigo_CIIU_Cliente_2": base_secundaria.iloc[mejores_indices[:, 1]]["codigo_ciiu"].values,
-        "Distancia_2": distancias[np.arange(len(base_principal)), mejores_indices[:, 1]],
-
-        # Tercera mejor oferta
-        "Identificacion_cliente_3": base_secundaria.iloc[mejores_indices[:, 2]]["identificacion"].values,
-        "EMPRESA_Cliente_3": base_secundaria.iloc[mejores_indices[:, 2]]["empresa"].values,
-        "Patrimonio_cliente_3": base_secundaria.iloc[mejores_indices[:, 2]]["patrimonio"].values,
-        "Personal_cliente_3": base_secundaria.iloc[mejores_indices[:, 2]]["personal"].values,
-        "Codigo_CIIU_Cliente_3": base_secundaria.iloc[mejores_indices[:, 2]]["codigo_ciiu"].values,
-        "Distancia_3": distancias[np.arange(len(base_principal)), mejores_indices[:, 2]],
-        })     
-
-        # Filtrar valores atípicos en la distancia
-        media = resultados["Distancia_1"].mean()
-        desviacion = resultados["Distancia_1"].std()
-        umbral = media + 1 * desviacion  # Ajusta el multiplicador según lo estricto que quieras ser
-        resultados = resultados[resultados["Distancia_1"] <= umbral]
-
-        # Redondear las distancias
-        resultados[["Distancia_1", "Distancia_2", "Distancia_3"]] = resultados[["Distancia_1", "Distancia_2", "Distancia_3"]].round(4)
-           
-
-        if filtrar_ciiu:
-
-            resultados["Codigo_CIIU"] = resultados["Codigo_CIIU"].fillna("NO_CIIU")
-            resultados["Codigo_CIIU_Cliente_1"] = resultados["Codigo_CIIU_Cliente_1"].fillna("NO_CIIU_1")
-            resultados["Codigo_CIIU_Cliente_2"] = resultados["Codigo_CIIU_Cliente_2"].fillna("NO_CIIU_2")
-            resultados["Codigo_CIIU_Cliente_3"] = resultados["Codigo_CIIU_Cliente_3"].fillna("NO_CIIU_3")
-
-            resultados = resultados[
-            (resultados["Codigo_CIIU"] == resultados["Codigo_CIIU_Cliente_1"]) |
-            (resultados["Codigo_CIIU"] == resultados["Codigo_CIIU_Cliente_2"]) |
-            (resultados["Codigo_CIIU"] == resultados["Codigo_CIIU_Cliente_3"])
-            ]
-            
-    else:
-        
-        resultados = pd.DataFrame({
-        "Identificacion": base_principal["identificacion"],
-        "EMPRESA": base_principal["empresa"],
-        "Patrimonio": base_principal["patrimonio"],
-        "Personal": base_principal["personal"],
-        "Codigo_CIIU": base_principal["codigo_ciiu"],
-        "Distancia": distancias[np.arange(len(base_principal)), mejores_indices[:, 0]],
-
-        # Mejor oferta
-        "Identificacion_cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["identificacion"].values,
-        "EMPRESA_Cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["empresa"].values,
-        "Patrimonio_cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["patrimonio"].values,
-        "Personal_cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["personal"].values,
-        "Codigo_CIIU_Cliente_1": base_secundaria.iloc[mejores_indices[:, 0]]["codigo_ciiu"].values,
+        "Identificacion_cliente_1": base_secundaria.iloc[mejores_indices]["identificacion"].values,
+        "EMPRESA_Cliente_1": base_secundaria.iloc[mejores_indices]["empresa"].values,
+        "Patrimonio_cliente_1": base_secundaria.iloc[mejores_indices]["patrimonio"].values,
+        "Personal_cliente_1": base_secundaria.iloc[mejores_indices]["personal"].values,
+        "Codigo_CIIU_Cliente_1": base_secundaria.iloc[mejores_indices]["codigo_ciiu"].values,
         
         })
-
         
-        media = resultados["Distancia"].mean()
-        desviacion = resultados["Distancia"].std()
-        umbral = media + 1 * desviacion  # Ajusta el multiplicador según lo estricto que quieras ser
+    resultados["Distancia"] = resultados["Distancia"].round(4)
 
-        # Filtrar solo los registros con distancia dentro del umbral
-        resultados = resultados[resultados["Distancia"] <= umbral]
-
-        resultados["Distancia"] = resultados["Distancia"].round(4)
-       
+    #Filtro de codigo_CIUU
         
-        if filtrar_ciiu:
-            resultados = resultados[
-            (resultados["Codigo_CIIU"] == resultados["Codigo_CIIU_Cliente_1"])
-        ]
+    codigos_ciiu_secundaria = set(
+            base_secundaria["codigo_ciiu"].dropna().apply(extraer_numeros_ciiu).dropna().unique()
+        )
+
+        # Extraer los números de los códigos CIIU de la base principal antes de filtrar
+    resultados["Codigo_CIIU_Numerico"] = resultados["Codigo_CIIU"].apply(extraer_numeros_ciiu)
+        
+        # Filtrar donde el código CIIU numérico de base_principal esté en los códigos de base_secundaria
+    resultados = resultados[resultados["Codigo_CIIU_Numerico"].isin(codigos_ciiu_secundaria)]
+        
+        # Eliminar la columna auxiliar después del filtrado
+    resultados = resultados.drop(columns=["Codigo_CIIU_Numerico"])
+
     return resultados
 
 st.sidebar.title("Menú")
@@ -262,9 +199,6 @@ if opcion == "Recomendaciones":
                 else:
                     status.update(label="Ocurrio un error al subir el archivo", state="error")
 
-
-        filtrar_ciiu = st.checkbox("Filtrar por CIIU", value=False)
-        recomendar_mas = st.checkbox("mas opciones", value=False)
         if st.button("Generar Recomendaciones"):
             start_time = time.time()
             with st.status("Cargando datos... por favor espera.", expanded=True) as status:
@@ -272,7 +206,7 @@ if opcion == "Recomendaciones":
                 crear_base_principal()
                 st.write("Paso 2: Archivo generado correctamente")
                 st.write("Paso 3: Generando recomendaciones apartir del modelo ...")
-                resultados = modelo_principal_sec(filtrar_ciiu, recomendar_mas)
+                resultados = modelo_principal_sec()
                 if resultados.empty:
                     status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
                 else:
