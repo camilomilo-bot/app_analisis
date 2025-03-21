@@ -102,20 +102,52 @@ def completar_nits():
         print("Error: No se pudieron descargar los datos desde el blob")
         return
 
-    # Renombrar la columna "NIT" a "IDENTIFICACION" si existe
-    if "NIT" in df_nits.columns:
-        df_nits.rename(columns={"NIT": "IDENTIFICACION"}, inplace=True)
+    # Verificar que df_nits tenga al menos una columna
+    if df_nits.shape[1] == 0:
+        print("Error: df_nits no tiene columnas")
+        return
 
-    # Verificar que la columna "IDENTIFICACION" existe en df_datos
+    # Obtener el nombre de la primera columna
+    primera_columna = df_nits.columns[0]
+
+    # Si el nombre de la primera columna es un número, significa que no tiene encabezado
+    if str(primera_columna).isdigit():
+        print("⚠️ Detectado que el archivo no tiene encabezado. Ajustando...")
+
+        # Restaurar la primera fila como datos
+        df_nits.loc[-1] = df_nits.columns  # Agregar la fila de nombres como datos
+        df_nits.index = df_nits.index + 1  # Ajustar los índices
+        df_nits = df_nits.sort_index()  # Reordenar correctamente
+
+        # Asignar el nuevo nombre de columna
+        df_nits.columns = ["IDENTIFICACION"]
+
+    else:
+        # Si la primera columna es "NIT", cambiar a "IDENTIFICACION"
+        if primera_columna == "NIT":
+            df_nits.rename(columns={"NIT": "IDENTIFICACION"}, inplace=True)
+        else:
+            # Si tiene otro nombre, asumir que es el identificador y renombrarlo
+            df_nits.rename(columns={primera_columna: "IDENTIFICACION"}, inplace=True)
+
+    # Verificar que df_datos tenga la columna IDENTIFICACION
     if "IDENTIFICACION" not in df_datos.columns:
         print("Error: La columna IDENTIFICACION no existe en df_datos")
         return
-
     # Filtrar los NITs presentes en el archivo grande
     df_filtrado = df_datos[df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
 
+    # **Filtrar eliminando los que tengan PATRIMONIO o PERSONAL en 0 o vacío**
+    if "Patrimonio" in df_filtrado.columns and "personal" in df_filtrado.columns:
+        df_filtrado = df_filtrado[
+            (df_filtrado["Patrimonio"].astype(float) > 0) & df_filtrado["Patrimonio"].notna() &
+            (df_filtrado["personal"].astype(float) > 0) & df_filtrado["personal"].notna()
+        ]
+
+    #st.dataframe(df_filtrado)
+
     # Subir el archivo filtrado a Azure Blob Storage
-    result = subir_df_a_blob(df=df_filtrado, blob_name="BaseSecundaria.parquet")
+    subir_df_a_blob(df=df_filtrado, blob_name="BaseSecundaria.parquet")
 
 def modelo_principal_sec():
   
@@ -210,6 +242,7 @@ if opcion == "Recomendaciones":
                 if resultados.empty:
                     status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
                 else:
+                    st.dataframe(resultados)
                     st.write("Paso 4: Creacion de archivo CSV")
                     st.download_button("Descargar CSV", resultados.to_csv(index=False, sep=";", decimal=","), "recomendaciones.csv", "text/csv")
                     elapsed_time = time.time() - start_time
