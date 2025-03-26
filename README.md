@@ -67,7 +67,7 @@ pip install -r requirements.txt
 ### Configuración del Entorno
 
 Crea un archivo `.env` en el directorio del proyecto y agrega las siguientes variables con la información de tu cuenta de Azure:
-
+```
 ```ini
 CONNECTION_STRING="tu_connection_string_de_azure"
 CONTAINER_NAME="nombre_del_contenedor"
