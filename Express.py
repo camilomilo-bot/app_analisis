@@ -4,10 +4,9 @@ import numpy as np
 import os
 import time
 from dotenv import load_dotenv
-from scipy.spatial.distance import cdist
+from scipy.spatial.distance import cdist, mahalanobis
 from sklearn.preprocessing import RobustScaler
 from azure.storage.blob import BlobServiceClient
-import re
 import io
 
 
@@ -51,15 +50,6 @@ if blob_service_client is None:
 
 def formatear_moneda(valor):
     return "${:,.2f}".format(valor)
-
-
-def extraer_numeros_ciiu(codigo):
-    """ Extrae solo los números del código CIIU """
-    if isinstance(codigo, str):
-        match = re.search(r'\d+', codigo)  # Busca la primera secuencia numérica
-        return match.group(0) if match else None
-    return None
-
 
 def subir_df_a_blob(df, blob_name):
     """Convierte un DataFrame a Parquet y lo sube directamente a Azure Blob Storage"""
@@ -120,6 +110,14 @@ def crear_base_principal():
         df_nits = descargar_df_desde_blob(blob_name="BaseSecundaria.parquet")
         #df_datos = pd.read_parquet("BasePrincipal.parquet")
         df_datos = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
+
+        # Eliminar valores nulos y vacíos en la columna 'ciiu_ccb'
+        df_datos = df_datos[df_datos["ciiu_ccb"].notna()]  # Elimina NaN
+        df_datos = df_datos[df_datos["ciiu_ccb"].str.strip() != ""]  # Elimina valores vacíos
+
+        # Eliminar valores nulos y vacíos en la columna 'ciiu_ccb'
+        df_nits = df_nits[df_nits["ciiu_ccb"].notna()]  # Elimina NaN
+        df_nits = df_nits[df_nits["ciiu_ccb"].str.strip() != ""]  # Elimina valores vacíos
 
         # Filtrar los NITs presentes en la base grande
         df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
@@ -212,56 +210,57 @@ def modelo_principal_sec():
   
     base_secundaria = descargar_df_desde_blob("BaseSecundaria.parquet")
     base_principal = descargar_df_desde_blob("BasePrincipalSNIT.parquet")
-    
-    for col in ["Patrimonio", "Personal"]:
-        base_secundaria[col] = pd.to_numeric(base_secundaria[col], errors="coerce").fillna(0)
-        base_principal[col] = pd.to_numeric(base_principal[col], errors="coerce").fillna(0)
-    
-    scaler = RobustScaler()
-    clientes_base_secundaria = scaler.fit_transform(base_secundaria[["Patrimonio", "Personal"]])
-    clientes_base_principal = scaler.transform(base_principal[["Patrimonio", "Personal"]])
-    
-    distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
-    # Obtener los tres mejores índices ordenados por menor distancia
-    mejores_indices = np.argmin(distancias, axis=1)
-    
-    resultados = pd.DataFrame({
-        "Identificacion": base_principal["IDENTIFICACION"],
-        "EMPRESA": base_principal["EMPRESA"],
-        "Patrimonio": base_principal["Patrimonio"],
-        "Personal": base_principal["Personal"],
-        "Codigo_CIIU": base_principal["codigo_ciiu"],
-        "Distancia": distancias[np.arange(len(base_principal)), mejores_indices],
 
-        # Mejor oferta
-        "Identificacion_cliente": base_secundaria.iloc[mejores_indices]["IDENTIFICACION"].values,
-        "EMPRESA_cliente": base_secundaria.iloc[mejores_indices]["EMPRESA"].values,
-        "Patrimonio_cliente": base_secundaria.iloc[mejores_indices]["Patrimonio"].values,
-        "Personal_cliente": base_secundaria.iloc[mejores_indices]["Personal"].values,
-        "Codigo_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["codigo_ciiu"].values,
-        })
+    if(len(base_secundaria) > 0):
+
+        for col in ["Patrimonio", "Personal"]:
+            base_secundaria[col] = pd.to_numeric(base_secundaria[col], errors="coerce").fillna(0)
+            base_principal[col] = pd.to_numeric(base_principal[col], errors="coerce").fillna(0)
         
-    resultados["Distancia"] = resultados["Distancia"].round(7)
-    #Filtro de codigo_CIUU
+        codigos_ciiu_secundaria = set(
+                base_secundaria["ciiu_ccb"].dropna().unique()
+            )
         
-    codigos_ciiu_secundaria = set(
-            base_secundaria["codigo_ciiu"].dropna().apply(extraer_numeros_ciiu).dropna().unique()
-        )
- 
-    #limpiar dataframe sin uno
-    del base_principal
-    del base_secundaria
+        # Filtrar donde el código CIIU numérico de base_principal esté en los códigos de base_secundaria
+        base_principal = base_principal[base_principal["ciiu_ccb"].isin(codigos_ciiu_secundaria)]
+       
+        scaler = RobustScaler()
+        clientes_base_secundaria = scaler.fit_transform(base_secundaria[["Patrimonio", "Personal"]])
+        clientes_base_principal = scaler.transform(base_principal[["Patrimonio", "Personal"]])
 
-    # Extraer los números de los códigos CIIU de la base principal antes de filtrar
-    resultados["Codigo_CIIU_Numerico"] = resultados["Codigo_CIIU"].apply(extraer_numeros_ciiu)    
+        #distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
+        distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="mahalanobis")
+       
+        mejores_indices = np.argmin(distancias, axis=1)
+        
+        resultados = pd.DataFrame({
+            "Identificacion": base_principal["IDENTIFICACION"],
+            "EMPRESA": base_principal["EMPRESA"],
+            "Patrimonio": base_principal["Patrimonio"],
+            "Personal": base_principal["Personal"],
+            "Codigo_CIIU": base_principal["ciiu_ccb"],
+            "Distancia": distancias[np.arange(len(base_principal)), mejores_indices],
 
-    # Filtrar donde el código CIIU numérico de base_principal esté en los códigos de base_secundaria
-    resultados = resultados[resultados["Codigo_CIIU_Numerico"].isin(codigos_ciiu_secundaria)]
+            # Mejor oferta
+            "Identificacion_cliente": base_secundaria.iloc[mejores_indices]["IDENTIFICACION"].values,
+            "EMPRESA_cliente": base_secundaria.iloc[mejores_indices]["EMPRESA"].values,
+            "Patrimonio_cliente": base_secundaria.iloc[mejores_indices]["Patrimonio"].values,
+            "Personal_cliente": base_secundaria.iloc[mejores_indices]["Personal"].values,
+            "Codigo_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["ciiu_ccb"].values,
+            })
+            
+        resultados["Distancia"] = resultados["Distancia"].round(8)
 
-    # Eliminar la columna auxiliar después del filtrado
-    resultados = resultados.drop(columns=["Codigo_CIIU_Numerico"])
+    
+        #limpiar dataframe sin uno
+        del base_principal
+        del base_secundaria
 
-    return resultados
+       
+
+        return resultados
+    else:
+        return pd.DataFrame()
 
 st.title("Aplicación Express")
 st.write("### Sube el archivo con NITs o Identificaciónes")
@@ -277,10 +276,11 @@ if uploaded_file:
                     resultados = modelo_principal_sec()
                     if resultados.empty:
                         status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
+                        st.error("Ocurrio un error en la Generacion de la recomendacion")
                     else:
                         st.session_state.resultados = resultados
                         num_generados = len(resultados)
-                        st.write(f"### 5: Se generaron {num_generados:,} registros.".replace(",", "."))
+                        st.write(f"### Paso 5: Se generaron {num_generados:,} registros.".replace(",", "."))
                         status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")
                                     
 
@@ -289,36 +289,49 @@ if "resultados" in st.session_state:
     resultados = st.session_state.resultados
 
     # Input para ingresar distancia máxima de filtrado
-    st.markdown("### Ingrese la distancia máxima para filtrar:")
-    distancia_max = st.number_input(
-        "a",
-        label_visibility="hidden",
-        min_value=0.0, 
-        step=1.0,
-        value=resultados["Distancia"].max(),
+    st.markdown("### Falta pregunta ****:")
+    num_registros = st.number_input(
+        f"Presiona Enter para aplicar, registros disponibles {len(resultados)}",
+        min_value=0, 
+        step=1,
+        value=0,
     )
 
-    # Filtrar y ordenar el DataFrame
-    df_filtrado = resultados[resultados["Distancia"] <= distancia_max].sort_values(by="Distancia", ascending=True)
 
-    # Mostrar número de registros filtrados
-    num_filtrados = len(df_filtrado)
-    st.write(f"### 🎯 Registros filtrados con distancia ≤ {distancia_max} = {num_filtrados:,} de registros".replace(",", "."))
+    # Ordenar el DataFrame por distancia
+    df_ordenado = resultados.sort_values(by="Distancia", ascending=True)
 
-    df_estilizado = df_filtrado.style.format({
-    "Patrimonio": "${:,.2f}",
-    "Personal": "{:,}",
-    "Patrimonio_cliente" : "${:,.2f}",
-    "Personal_cliente": "{:,}"
-    })
+    # Obtener el total de registros disponibles
+    total_registros = len(df_ordenado)
 
-    # Mostrar DataFrame con estilo visual, pero sin modificar los datos reales
-    st.dataframe(df_estilizado)
 
-    # Botón para descargar datos filtrados
-    st.download_button(
-        "Descargar CSV", 
-        df_filtrado.to_csv(index=False, sep=";", decimal=","), 
-        "recomendaciones.csv", 
-        "text/csv"
-    )  
+    if(num_registros > 0):
+        if num_registros > total_registros:
+            st.warning(f"El número ingresado ({num_registros}) es mayor que los registros disponibles ({total_registros}). Mostrando todos los registros disponibles.")
+            df_filtrado = df_ordenado  # Mostrar todos los disponibles
+        else:
+            # Seleccionar los primeros 'num_registros'
+            df_filtrado = df_ordenado.head(num_registros)
+
+            # Mostrar número de registros filtrados
+            num_filtrados = len(df_filtrado)
+
+            st.write(f"### 🎯 Cantidad de registros generados {num_filtrados:,}")
+
+        df_estilizado = df_filtrado.head(1000).style.format({
+        "Patrimonio": "${:,.2f}",
+        "Personal": "{:,}",
+        "Patrimonio_cliente" : "${:,.2f}",
+        "Personal_cliente": "{:,}"
+        })
+        # Mostrar DataFrame con estilo visual, pero sin modificar los datos reales
+        st.dataframe(df_estilizado)
+
+        csv_data = df_filtrado.to_csv(index=False, sep=";", decimal=",", encoding="latin-1").encode("UTF-8")
+        # Botón para descargar datos filtrados
+        st.download_button(
+            label="Descargar CSV", 
+            data=csv_data,  # Pasar los datos en bytes
+            file_name="recomendaciones.csv", 
+            mime="text/csv"
+        )  
