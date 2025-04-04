@@ -8,6 +8,7 @@ from scipy.spatial.distance import cdist, mahalanobis
 from sklearn.preprocessing import RobustScaler
 from azure.storage.blob import BlobServiceClient
 import io
+import datetime
 
 
 st.set_page_config(layout="wide")
@@ -62,7 +63,7 @@ def subir_df_a_blob(df, blob_name):
         
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
         blob_client.upload_blob(buffer, overwrite=True)
-        
+        del df
         return True
     except Exception as e:
         status.update(label=f"Error al subir archivo: {e}", state="error")
@@ -106,9 +107,8 @@ def cargar_archivo(uploaded_file, filename):
 
 def crear_base_principal():
     try:
-        # Cargar archivos con Dask en formato Parquet
+        # Cargar archivos con Pandas en formato Parquet
         df_nits = descargar_df_desde_blob(blob_name="BaseSecundaria.parquet")
-        #df_datos = pd.read_parquet("BasePrincipal.parquet")
         df_datos = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
 
         # Eliminar valores nulos y vacíos en la columna 'ciiu_ccb'
@@ -121,6 +121,8 @@ def crear_base_principal():
 
         # Filtrar los NITs presentes en la base grande
         df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
+
+        df_sin_nits = df_sin_nits[(df_sin_nits["Personal"] > 0) & (df_sin_nits["Patrimonio"] > 0)]  # Mantiene solo valores mayores a 0
 
         # Subir a Azure Blob Storage
         result = subir_df_a_blob(df_sin_nits, blob_name="BasePrincipalSNIT.parquet")
@@ -188,9 +190,16 @@ def completar_nits(uploaded_file):
 
         # Filtrar los NITs presentes en el archivo grande
         df_filtrado = df_datos[df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
-
         #limpiar dataframe sin uno
         del df_datos
+        del df_nits
+
+        codigos_ciiu_secundaria = set(
+                df_filtrado["ciiu_ccb"].dropna().unique()
+            )
+        #print(" codigo ciius antes de eliminar" ,codigos_ciiu_secundaria, " cantidad ", len(codigos_ciiu_secundaria))
+
+        #df_filtrado = df_filtrado.dropna(subset=["Personal", "Patrimonio", "ciiu_ccb"]) 
 
         # **Filtrar eliminando los que tengan PATRIMONIO o PERSONAL en 0 o vacío**
         if "Patrimonio" in df_filtrado.columns and "Personal" in df_filtrado.columns:
@@ -221,6 +230,8 @@ def modelo_principal_sec():
                 base_secundaria["ciiu_ccb"].dropna().unique()
             )
         
+        #print(" codigo ciius despues de eliminar" ,codigos_ciiu_secundaria, " cantidad ", len(codigos_ciiu_secundaria))
+
         # Filtrar donde el código CIIU numérico de base_principal esté en los códigos de base_secundaria
         base_principal = base_principal[base_principal["ciiu_ccb"].isin(codigos_ciiu_secundaria)]
        
@@ -251,12 +262,9 @@ def modelo_principal_sec():
             
         resultados["Distancia"] = resultados["Distancia"].round(8)
 
-    
         #limpiar dataframe sin uno
         del base_principal
         del base_secundaria
-
-       
 
         return resultados
     else:
@@ -289,7 +297,7 @@ if "resultados" in st.session_state:
     resultados = st.session_state.resultados
 
     # Input para ingresar distancia máxima de filtrado
-    st.markdown("### Falta pregunta ****:")
+    st.markdown("### Cuentos registros quieres generar ?:")
     num_registros = st.number_input(
         f"Presiona Enter para aplicar, registros disponibles {len(resultados)}",
         min_value=0, 
@@ -297,13 +305,11 @@ if "resultados" in st.session_state:
         value=0,
     )
 
-
     # Ordenar el DataFrame por distancia
     df_ordenado = resultados.sort_values(by="Distancia", ascending=True)
 
     # Obtener el total de registros disponibles
     total_registros = len(df_ordenado)
-
 
     if(num_registros > 0):
         if num_registros > total_registros:
@@ -318,7 +324,7 @@ if "resultados" in st.session_state:
 
             st.write(f"### 🎯 Cantidad de registros generados {num_filtrados:,}")
 
-        df_estilizado = df_filtrado.head(1000).style.format({
+        df_estilizado = df_filtrado.head(500).style.format({
         "Patrimonio": "${:,.2f}",
         "Personal": "{:,}",
         "Patrimonio_cliente" : "${:,.2f}",
@@ -329,9 +335,12 @@ if "resultados" in st.session_state:
 
         csv_data = df_filtrado.to_csv(index=False, sep=";", decimal=",", encoding="latin-1").encode("UTF-8")
         # Botón para descargar datos filtrados
+        # Crear el nombre del archivo con la fecha
+        nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime("%d-%m-%Y")}.csv"
+
         st.download_button(
             label="Descargar CSV", 
             data=csv_data,  # Pasar los datos en bytes
-            file_name="recomendaciones.csv", 
+            file_name = nombre_archivo,
             mime="text/csv"
         )  
