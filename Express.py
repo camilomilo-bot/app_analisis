@@ -297,7 +297,7 @@ if "resultados" in st.session_state:
     resultados = st.session_state.resultados
 
     # Input para ingresar distancia máxima de filtrado
-    st.markdown("### Cuentos registros quieres generar ?:")
+    st.markdown("###¿ Cuantos registros quieres generar ?:")
     num_registros = st.number_input(
         f"Presiona Enter para aplicar, registros disponibles {len(resultados)}",
         min_value=0, 
