@@ -261,6 +261,7 @@ def modelo_principal_sec():
 
 
         mejores_indices = np.argmin(distancias, axis=1)
+        print(base_principal.columns)
         resultados = pd.DataFrame({
             "Identificacion": base_principal["IDENTIFICACION"],
             "EMPRESA": base_principal["EMPRESA"],
