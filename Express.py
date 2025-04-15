@@ -4,27 +4,22 @@ import numpy as np
 import os
 import time
 from dotenv import load_dotenv
-from scipy.spatial.distance import cdist, mahalanobis
+from scipy.spatial.distance import cdist
 from sklearn.preprocessing import RobustScaler
 from azure.storage.blob import BlobServiceClient
 import plotly.express as px
 import io
 import gc
 import datetime
-import seaborn as sns
-import matplotlib.pyplot as plt
-
 
 st.set_page_config(layout="wide")
+
 
 # Número máximo de intentos de conexión
 MAX_RETRIES = 3  
 RETRY_DELAY = 5  # Segundos entre intentos
 
 load_dotenv()
-
-df_principal = None
-df_secundaria = None
 
 container_name = os.getenv("CONTAINER_NAME")
 
@@ -124,6 +119,7 @@ def crear_base_principal():
        
         del df_datos_cli
         del df_datos_cc
+        limpiar_memoria()
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
         
@@ -207,6 +203,7 @@ def completar_nits(uploaded_file):
 
         #limpiar dataframe sin uno
         del df_datos
+        limpiar_memoria()
 
         # **Filtrar eliminando los que tengan PATRIMONIO o PERSONAL en 0 o vacío**
         if "Patrimonio" in df_filtrado.columns and "Personal" in df_filtrado.columns:
@@ -296,13 +293,13 @@ st.title("Perfilador Corp Express")
 st.write("### Sube el archivo con NITs o Identificaciónes")
 uploaded_file = st.file_uploader("Sube la base con NIT o Identificación", type=["xlsx", "xls"], label_visibility="hidden")
 if uploaded_file:
-
     if st.button("Generar Recomendaciones"):
         start_time = time.time()
         with st.status("Procesando datos... por favor espera.", expanded=True) as status:                    
             #result = cargar_archivo(uploaded_file, "temporal1.parquet") 
             if completar_nits(uploaded_file):
-                    
+                    del uploaded_file
+                    gc.collect()
                     crear_base_principal()
                     st.write(f"### Paso 3. Completando la Base de NITs")
                     
@@ -315,21 +312,19 @@ if uploaded_file:
                         st.session_state.resultados = resultados
                         num_generados = len(resultados)
                         st.write(f"### Paso 5: Generando base resultado.")
-                        status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")
-                                    
+                        status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
 
 # Verificar si ya hay resultados en session_state antes de mostrar opciones de filtrado
 if "resultados" in st.session_state:
     resultados = st.session_state.resultados
 
-
+    
     # Ordenar el DataFrame por distancia
     df_ordenado = resultados.sort_values(by="Distancia", ascending=True)
 
     porcentaje_cliente_0 = 0.19
     porcentaje_cliente_1 = 0.85
     # Calcula cuántos registros tomar de cada grupo
-    #n_cliente_1 = int(len(df_ordenado) * porcentaje_cliente_1)
     
     # Filtra por cada grupo
     df_cliente_1 = df_ordenado[df_ordenado["Cliente"] == 1].sort_values(by="Distancia", ascending=True)
@@ -337,7 +332,9 @@ if "resultados" in st.session_state:
     df_cliente_0 = df_ordenado[df_ordenado["Cliente"] == 0].sort_values(by="Distancia", ascending=True).head(n_cliente_0)
     
     df_filtrado = pd.concat([df_cliente_1, df_cliente_0], ignore_index=True)
-
+    del df_cliente_1
+    del df_cliente_0
+    
     # Datos disponibles
     total_rent = len(df_filtrado[df_filtrado["Cliente"] == 1])
     total_crec = len(df_filtrado[df_filtrado["Cliente"] == 0])
@@ -370,21 +367,25 @@ if "resultados" in st.session_state:
         # Filtrar según cantidades
         df_rent = df_filtrado[df_filtrado["Cliente"] == 1].head(num_rent)
         df_crec = df_filtrado[df_filtrado["Cliente"] == 0].head(num_crec)
+        
         df_filtrado = pd.concat([df_rent, df_crec])
+        del df_rent
+        del df_crec
+        limpiar_memoria()
         # Ordenar de mayor a menor según la columna 'distancia'
         df_filtrado = df_filtrado.sort_values(by="Distancia", ascending=True)
 
         st.write(f"### 🎯 Registros generados: {len(df_filtrado):,}")
 
     if num_rent > 0 or num_crec > 0:
-        df_estilizado = df_filtrado.head(1000).style.format({
+        df_estilizado = df_filtrado.head(200).style.format({
         "Patrimonio": "${:,.2f}",
         "Personal": "{:,}",
         "Patrimonio_cliente" : "${:,.2f}",
         "Personal_cliente": "{:,}"
         })
         # Mostrar DataFrame con estilo visual, pero sin modificar los datos reales
-        st.markdown("**📋 Mostrando solo los primeros 1000 registros**")
+        st.markdown("**📋 Mostrando solo los primeros 200 registros**")
         st.dataframe(df_estilizado)
         nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime("%d-%m-%Y")}.csv"
 
