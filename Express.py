@@ -9,6 +9,7 @@ from sklearn.preprocessing import RobustScaler
 from azure.storage.blob import BlobServiceClient
 import plotly.express as px
 import io
+import gc
 import datetime
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -26,6 +27,9 @@ df_principal = None
 df_secundaria = None
 
 container_name = os.getenv("CONTAINER_NAME")
+
+def limpiar_memoria():
+    gc.collect()
 
 def conectar_blob_storage():
     """ Intenta conectar a Azure Blob Storage con reintentos en caso de fallo """
@@ -105,10 +109,10 @@ def cargar_archivo(uploaded_file, filename):
         return len(df)
 
     except Exception as e:
-        status.update(label="Error: No se pudo subir un archivo a Azure", state="error")
+        status.update(label=f"Error: No se pudo subir un archivo a Azure {e}", state="error")
         return 0 
 
-def crear_base_principal(ccactivado=False):
+def crear_base_principal():
     try:
        
         df_nits = descargar_df_desde_blob(blob_name="BaseSecundariaCC.parquet")
@@ -116,7 +120,7 @@ def crear_base_principal(ccactivado=False):
         df_datos_cc["Cliente"] = 0
         df_datos_cli = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
         
-        df_datos = pd.concat([df_datos_cc, df_datos_cli], ignore_index=True).copy()
+        df_datos = pd.concat([df_datos_cc, df_datos_cli], ignore_index=True)
        
         del df_datos_cli
         del df_datos_cc
@@ -135,17 +139,19 @@ def crear_base_principal(ccactivado=False):
         df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
 
         del df_nits
+        del df_datos
+        limpiar_memoria()
         # Subir a Azure Blob Storage
         result = subir_df_a_blob(df_sin_nits, blob_name="BasePrincipalSNITCC.parquet")
         return result  # True si se subió correctamente, False si hubo un error
 
     except Exception as e:
-        status.update(label="Error: Creando la Base Principal sin NTS's del archivo de entrada", state="error")
+        status.update(label=f"Error: Creando la Base Principal sin NTS's del archivo de entrada {e}", state="error")
         return False
 
 def completar_nits(uploaded_file):
     # Descargar los DataFrames desde Azure Blob
-    df_nits = descargar_df_desde_blob(blob_name="temporal1.parquet")
+    df_nits = pd.read_excel(uploaded_file, dtype=str)
 
     # Verificar que los DataFrames no estén vacíos
     if df_nits is None:
@@ -181,8 +187,7 @@ def completar_nits(uploaded_file):
 
     numero_registros = len(df_nits)
     if numero_registros > 0:
-        st.write(f"### Paso 1: Cargando Archivo `{uploaded_file}` con un Total de {numero_registros} registros.")
-        #df_datos = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
+        st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con un Total de {numero_registros} registros.")
         df_datos = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
 
 
@@ -218,9 +223,6 @@ def completar_nits(uploaded_file):
         return False
     
 def modelo_principal_sec():
-  
-    #base_secundaria = descargar_df_desde_blob("BaseSecundaria.parquet")
-    #base_principal = descargar_df_desde_blob("BasePrincipalSNIT.parquet")
 
     base_secundaria = descargar_df_desde_blob("BaseSecundariaCC.parquet")
     base_principal = descargar_df_desde_blob("BasePrincipalSNITCC.parquet")
@@ -261,7 +263,7 @@ def modelo_principal_sec():
 
 
         mejores_indices = np.argmin(distancias, axis=1)
-        print(base_principal.columns)
+
         resultados = pd.DataFrame({
             "Identificacion": base_principal["IDENTIFICACION"],
             "EMPRESA": base_principal["EMPRESA"],
@@ -285,7 +287,7 @@ def modelo_principal_sec():
         #limpiar dataframe sin uno
         del base_principal
         del base_secundaria
-
+        limpiar_memoria()
         return resultados
     else:
         return pd.DataFrame()
@@ -298,8 +300,8 @@ if uploaded_file:
     if st.button("Generar Recomendaciones"):
         start_time = time.time()
         with st.status("Procesando datos... por favor espera.", expanded=True) as status:                    
-            result = cargar_archivo(uploaded_file, "temporal1.parquet") 
-            if completar_nits(uploaded_file.name):
+            #result = cargar_archivo(uploaded_file, "temporal1.parquet") 
+            if completar_nits(uploaded_file):
                     
                     crear_base_principal()
                     st.write(f"### Paso 3. Completando la Base de NITs")
