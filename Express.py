@@ -83,6 +83,8 @@ def descargar_df_desde_blob(blob_name):
         stream = io.BytesIO(blob_client.download_blob().readall())
         # Convertir de Parquet a DataFrame
         df = pd.read_parquet(stream)
+        if "Cliente" in df.columns:
+            df["Cliente"] = df["Cliente"].astype("int8")
         return df
     except Exception as e:
         status.update(label=f"Error al descargar archivo: {e}", state="error")
