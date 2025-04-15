@@ -112,9 +112,7 @@ def crear_base_principal():
        
         df_nits = descargar_df_desde_blob(blob_name="BaseSecundariaCC.parquet")
         df_datos_cc = descargar_df_desde_blob(blob_name="BasePrincipalCCTotal.parquet")
-        df_datos_cc["Cliente"] = 0
         df_datos_cli = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
-        
         df_datos = pd.concat([df_datos_cc, df_datos_cli], ignore_index=True)
        
         del df_datos_cli
@@ -264,6 +262,7 @@ def modelo_principal_sec():
         resultados = pd.DataFrame({
             "Identificacion": base_principal["IDENTIFICACION"],
             "EMPRESA": base_principal["EMPRESA"],
+            "Tipo_Documento": base_principal["Tipo_Documento"].astype(str).str.upper(),
             "Patrimonio": base_principal["Patrimonio"],
             "Personal": base_principal["Personal"],
             "Codigo_CIIU": base_principal["ciiu_ccb"],
