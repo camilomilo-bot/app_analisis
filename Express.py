@@ -49,42 +49,40 @@ blob_service_client = conectar_blob_storage()
 
 # Si la conexión falló, se puede manejar en otro lugar
 if blob_service_client is None:
-    st.error("🚨 Aplicación sin acceso a Azure, Verifica la conexión. !!!!! Intenta volviendo actualizar la pagina web 😊")
+    st.error("🚨 Aplicación sin acceso, Verifica la conexión. !!!!! Intenta volviendo actualizar la pagina web 😊")
 
 def formatear_moneda(valor):
     return "${:,.2f}".format(valor)
 
 def subir_df_a_blob(df, blob_name):
-    """Convierte un DataFrame a Parquet y lo sube directamente a Azure Blob Storage"""
     try:
-        # Convertir DataFrame a formato Parquet en memoria
         buffer = io.BytesIO()
-        df.to_parquet(buffer, index=False)
-        buffer.seek(0)  # Volver al inicio del buffer
-        # Subir a Azure Blob Storage
-        
+        # Comprimir usando Snappy
+        df.to_parquet(buffer, index=False, compression='snappy')
+        buffer.seek(0)
+
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
         blob_client.upload_blob(buffer, overwrite=True)
-        
+        buffer.close()
         return True
     except Exception as e:
         status.update(label=f"Error al subir archivo: {e}", state="error")
         return False
 
 def descargar_df_desde_blob(blob_name):
-    """Descarga un archivo Parquet desde Azure y lo convierte en un DataFrame"""
     try:
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-        # Verificar si el archivo existe antes de descargarlo
         if not blob_client.exists():
-            st.error(f"❌ El archivo {blob_name} no se encontró en la base de datos.")
+            st.error(f"❌ El archivo {blob_name} no se encontró en Azure Blob Storage.")
             return None
 
-        stream = io.BytesIO(blob_client.download_blob().readall())
-        # Convertir de Parquet a DataFrame
-        df = pd.read_parquet(stream)
+        with io.BytesIO(blob_client.download_blob().readall()) as stream:
+            df = pd.read_parquet(stream)
+
+        # Conversión eficiente de columnas
         if "Cliente" in df.columns:
-            df["Cliente"] = df["Cliente"].astype("int8")
+            df["Cliente"] = pd.to_numeric(df["Cliente"], errors="coerce").astype("int8")
+
         return df
     except Exception as e:
         status.update(label=f"Error al descargar archivo: {e}", state="error")
@@ -92,22 +90,24 @@ def descargar_df_desde_blob(blob_name):
 
 
 def cargar_archivo(uploaded_file, filename):
-    """Lee un archivo Excel, lo convierte a Parquet en memoria y lo sube a Azure Blob Storage."""
     if not uploaded_file:
         return False
     try:
         df = pd.read_excel(uploaded_file, dtype=str)
-        
+
         if df.empty:
             st.warning("⚠️ No se puede subir un DataFrame vacío.")
             return False
-        # Subir a Azure Blob Storage
-        subir_df_a_blob(df, filename)  # Asegúrate de que esta función acepte un BytesIO
-        return len(df)
 
+        # Optimización de memoria: conversión de columnas si aplica
+        if "Cliente" in df.columns:
+            df["Cliente"] = pd.to_numeric(df["Cliente"], errors="coerce").astype("int8")
+
+        subir_df_a_blob(df, filename)
+        return len(df)
     except Exception as e:
         status.update(label=f"Error: No se pudo subir un archivo a Azure {e}", state="error")
-        return 0 
+        return 0
 
 def crear_base_principal():
     try:
@@ -115,27 +115,20 @@ def crear_base_principal():
         df_nits = descargar_df_desde_blob(blob_name="BaseSecundariaCC.parquet")
         df_datos_cc = descargar_df_desde_blob(blob_name="BasePrincipalCCTotal.parquet")
         df_datos_cli = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
+
         df_datos = pd.concat([df_datos_cc, df_datos_cli], ignore_index=True)
-       
-        del df_datos_cli
-        del df_datos_cc
+        # Eliminar bases originales para liberar RAM
+        del df_datos_cc, df_datos_cli
         limpiar_memoria()
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
-        
-        # Eliminar valores nulos y vacíos en la columna 'ciiu_ccb'
-        df_datos = df_datos[df_datos["ciiu_ccb"].notna()]  # Elimina NaN
-        df_datos = df_datos[df_datos["ciiu_ccb"].str.strip() != ""]  # Elimina valores vacíos
 
-        # Eliminar valores nulos y vacíos en la columna 'ciiu_ccb'
-        df_nits = df_nits[df_nits["ciiu_ccb"].notna()]  # Elimina NaN
-        df_nits = df_nits[df_nits["ciiu_ccb"].str.strip() != ""]  # Elimina valores vacíos
 
+        nits_set = set(df_nits["IDENTIFICACION"])
         # Filtrar los NITs presentes en la base grande
-        df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
-
-        del df_nits
-        del df_datos
+        df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(nits_set)]
+        
+        del df_nits, df_datos
         limpiar_memoria()
         # Subir a Azure Blob Storage
         result = subir_df_a_blob(df_sin_nits, blob_name="BasePrincipalSNITCC.parquet")
@@ -143,81 +136,67 @@ def crear_base_principal():
 
     except Exception as e:
         status.update(label=f"Error: Creando la Base Principal sin NTS's del archivo de entrada {e}", state="error")
+        limpiar_memoria()
         return False
 
 def completar_nits(uploaded_file):
-    # Descargar los DataFrames desde Azure Blob
-    df_nits = pd.read_excel(uploaded_file, dtype=str)
+    try:
+        # Leer solo la primera columna del archivo para identificar NITs
+        df_nits = pd.read_excel(uploaded_file, dtype=str, usecols=[0])
 
-    # Verificar que los DataFrames no estén vacíos
-    if df_nits is None:
-        status.update(label="Error: No se pudieron descargar los datos desde el Azure", state="error")
-        return False
-    
-    # Verificar que df_nits tenga al menos una columna
-    if df_nits.shape[1] == 0:
-        status.update(label="Error: No se pudieron descargar los datos desde el Azure", state="error")
-        return False
+        if df_nits.empty:
+            status.update(label="Error: El archivo está vacío.", state="error")
+            return False
 
-    # Obtener el nombre de la primera columna
-    primera_columna = df_nits.columns[0]
-
-    # Si el nombre de la primera columna es un número, significa que no tiene encabezado
-    if str(primera_columna).isdigit():
-        
-        # Restaurar la primera fila como datos
-        df_nits.loc[-1] = df_nits.columns  # Agregar la fila de nombres como datos
-        df_nits.index = df_nits.index + 1  # Ajustar los índices
-        df_nits = df_nits.sort_index()  # Reordenar correctamente
-
-        # Asignar el nuevo nombre de columna
-        df_nits.columns = ["IDENTIFICACION"]
-
-    else:
-        # Si la primera columna es "NIT", cambiar a "IDENTIFICACION"
-        if primera_columna == "NIT":
-            df_nits.rename(columns={"NIT": "IDENTIFICACION"}, inplace=True)
+        # Identificar si hay encabezado incorrecto
+        primera_columna = df_nits.columns[0]
+        if str(primera_columna).isdigit():
+            # Restaurar primera fila como datos si no hay encabezado
+            df_nits.loc[-1] = df_nits.columns
+            df_nits.index = df_nits.index + 1
+            df_nits = df_nits.sort_index()
+            df_nits.columns = ["IDENTIFICACION"]
         else:
-            # Si tiene otro nombre, asumir que es el identificador y renombrarlo
             df_nits.rename(columns={primera_columna: "IDENTIFICACION"}, inplace=True)
 
-    numero_registros = len(df_nits)
-    if numero_registros > 0:
-        st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con un Total de {numero_registros} registros.")
+        numero_registros = len(df_nits)
+        if numero_registros == 0:
+            status.update(label="El archivo no contiene registros.", state="error")
+            return False
+
+        st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
+
+        # Descargar base desde Azure
         df_datos = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
-
-
-        if df_datos is None:
-            status.update(label="Error: No se pudieron descargar los datos desde el Azure", state="error")
+        if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
+            status.update(label="Error al descargar datos desde Azure.", state="error")
             return False
-        
-        
-        # Verificar que df_datos tenga la columna IDENTIFICACION
-        if "IDENTIFICACION" not in df_datos.columns:
-            status.update(label="Error: Ocurrio un error inesperado", state="error")
-            return False
-        
-        # Filtrar los NITs presentes en el archivo grande
-        df_filtrado = df_datos[df_datos["IDENTIFICACION"].isin(df_nits["IDENTIFICACION"])]
 
+        # Merge en lugar de isin para mayor eficiencia
+        df_nits["IDENTIFICACION"] = df_nits["IDENTIFICACION"].astype(str)
+        df_datos["IDENTIFICACION"] = df_datos["IDENTIFICACION"].astype(str)
 
-        #limpiar dataframe sin uno
-        del df_datos
+        df_filtrado = df_datos.merge(df_nits, on="IDENTIFICACION", how="inner")
+        del df_datos, df_nits
         limpiar_memoria()
 
-        # **Filtrar eliminando los que tengan PATRIMONIO o PERSONAL en 0 o vacío**
+        # Validar columnas antes de filtrar
         if "Patrimonio" in df_filtrado.columns and "Personal" in df_filtrado.columns:
+            df_filtrado["Patrimonio"] = pd.to_numeric(df_filtrado["Patrimonio"], errors="coerce")
+            df_filtrado["Personal"] = pd.to_numeric(df_filtrado["Personal"], errors="coerce")
+
             df_filtrado = df_filtrado[
-                (df_filtrado["Patrimonio"].astype(float) > 0) & df_filtrado["Patrimonio"].notna() &
-                (df_filtrado["Personal"].astype(float) > 0) & df_filtrado["Personal"].notna()
+                (df_filtrado["Patrimonio"] > 0) &
+                (df_filtrado["Personal"] > 0)
             ]
-        
-        # Subir el archivo filtrado a Azure Blob Storage
-        #return subir_df_a_blob(df=df_filtrado, blob_name="BaseSecundaria.parquet")
+
+        # Subir archivo procesado
         return subir_df_a_blob(df=df_filtrado, blob_name="BaseSecundariaCC.parquet")
-    else:
-        status.update(label="El archivo ingresado no contiene registros para procesar... Verfica tu archivo y vuelve a intentarlo", state="error")
+
+    except Exception as e:
+        status.update(label=f"Error inesperado: {str(e)}", state="error")
         return False
+
     
 def modelo_principal_sec():
 
@@ -250,13 +229,8 @@ def modelo_principal_sec():
         ciiu_dict = dict(zip(ciiu_dict["ciiu_ccb"], ciiu_dict["Descripcion_CIIU"]))
 
         # Rellenar descripciones faltantes en Cliente == 0 usando el diccionario
-        base_principal.loc[
-            (base_principal["Cliente"] == 0) & (base_principal["Descripcion_CIIU"].isna()),
-            "Descripcion_CIIU"
-        ] = base_principal.loc[
-            (base_principal["Cliente"] == 0) & (base_principal["Descripcion_CIIU"].isna()),
-            "ciiu_ccb"
-        ].map(ciiu_dict)
+        cond = (base_principal["Cliente"] == 0) & (base_principal["Descripcion_CIIU"].isna())
+        base_principal.loc[cond, "Descripcion_CIIU"] = base_principal.loc[cond, "ciiu_ccb"].map(ciiu_dict)
 
 
         mejores_indices = np.argmin(distancias, axis=1)
@@ -300,7 +274,7 @@ if uploaded_file:
             #result = cargar_archivo(uploaded_file, "temporal1.parquet") 
             if completar_nits(uploaded_file):
                     del uploaded_file
-                    gc.collect()
+                    limpiar_memoria()
                     crear_base_principal()
                     st.write(f"### Paso 3. Completando la Base de NITs")
                     
@@ -310,6 +284,7 @@ if uploaded_file:
                         status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
                         st.error("Ocurrio un error en la Generacion de la recomendacion")
                     else:
+                        limpiar_memoria()
                         st.session_state.resultados = resultados
                         num_generados = len(resultados)
                         st.write(f"### Paso 5: Generando base resultado.")
@@ -319,104 +294,93 @@ if uploaded_file:
 if "resultados" in st.session_state:
     resultados = st.session_state.resultados
 
-    
-    # Ordenar el DataFrame por distancia
-    df_ordenado = resultados.sort_values(by="Distancia", ascending=True)
+    # Separar y ordenar solo una vez
+    df_cliente_1 = resultados[resultados["Cliente"] == 1].copy().sort_values(by="Distancia")
+    df_cliente_0 = resultados[resultados["Cliente"] == 0].copy().sort_values(by="Distancia")
 
     porcentaje_cliente_0 = 0.19
     porcentaje_cliente_1 = 0.85
-    # Calcula cuántos registros tomar de cada grupo
-    
-    # Filtra por cada grupo
-    df_cliente_1 = df_ordenado[df_ordenado["Cliente"] == 1].sort_values(by="Distancia", ascending=True)
+
     n_cliente_0 = int(len(df_cliente_1) * porcentaje_cliente_0)
-    df_cliente_0 = df_ordenado[df_ordenado["Cliente"] == 0].sort_values(by="Distancia", ascending=True).head(n_cliente_0)
-    
+    df_cliente_0 = df_cliente_0.head(n_cliente_0)
+
+    # Concatenar clientes seleccionados
     df_filtrado = pd.concat([df_cliente_1, df_cliente_0], ignore_index=True)
+
+    # Limpiar memoria de intermedios
+    del resultados
     del df_cliente_1
     del df_cliente_0
-    
+    limpiar_memoria()
+
     # Datos disponibles
-    total_rent = len(df_filtrado[df_filtrado["Cliente"] == 1])
-    total_crec = len(df_filtrado[df_filtrado["Cliente"] == 0])
+    total_rent = (df_filtrado["Cliente"] == 1).sum()
+    total_crec = (df_filtrado["Cliente"] == 0).sum()
     total_disponibles = len(df_filtrado)
 
-    total_registros = len(df_filtrado)
+    st.markdown("### ¿Cuántos clientes vas a gestionar?")
 
-    st.markdown("### ¿ Cuantos clientes vas a gestionar?: ")
-        # Modo avanzado
     col1, col2 = st.columns(2)
-
     with col1:
         num_rent = st.number_input(
             f"Cantidad de Rentabilizar [máx {total_rent:,}]",
-            min_value=0,
-            max_value=total_rent,
-            value=0,
-            step=1,
+            min_value=0, max_value=total_rent, value=0, step=1,
         )
     with col2:
         num_crec = st.number_input(
             f"Cantidad de Crecimiento [máx {total_crec:,}]",
-            min_value=0,
-            max_value=total_crec,
-            value=0,
-            step=1,
+            min_value=0, max_value=total_crec, value=0, step=1,
         )
 
-    if num_rent > 0 or num_crec > 0:  
-        # Filtrar según cantidades
+    if num_rent > 0 or num_crec > 0:
         df_rent = df_filtrado[df_filtrado["Cliente"] == 1].head(num_rent)
         df_crec = df_filtrado[df_filtrado["Cliente"] == 0].head(num_crec)
-        
-        df_filtrado = pd.concat([df_rent, df_crec])
-        del df_rent
-        del df_crec
+        df_filtrado = pd.concat([df_rent, df_crec]).sort_values(by="Distancia")
+        del df_rent, df_crec
         limpiar_memoria()
-        # Ordenar de mayor a menor según la columna 'distancia'
-        df_filtrado = df_filtrado.sort_values(by="Distancia", ascending=True)
 
         st.write(f"### 🎯 Registros generados: {len(df_filtrado):,}")
 
-    if num_rent > 0 or num_crec > 0:
         df_estilizado = df_filtrado.head(200).style.format({
-        "Patrimonio": "${:,.2f}",
-        "Personal": "{:,}",
-        "Patrimonio_cliente" : "${:,.2f}",
-        "Personal_cliente": "{:,}"
+            "Patrimonio": "${:,.2f}",
+            "Personal": "{:,}",
+            "Patrimonio_cliente": "${:,.2f}",
+            "Personal_cliente": "{:,}"
         })
-        # Mostrar DataFrame con estilo visual, pero sin modificar los datos reales
+
         st.markdown("**📋 Mostrando solo los primeros 200 registros**")
         st.dataframe(df_estilizado)
-        nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime("%d-%m-%Y")}.csv"
 
+        # Generar nombre de archivo
+        nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime('%d-%m-%Y')}.csv"
+
+        # Convertir a CSV solo si hay registros
         csv_data = df_filtrado.to_csv(index=False, sep=";", decimal=",", encoding="latin-1").encode("UTF-8")
-        # Botón para descargar datos filtrados
+
         st.download_button(
-            label="Descargar CSV", 
-            data=csv_data,  # Pasar los datos en bytes
-            file_name = nombre_archivo,
+            label="Descargar CSV",
+            data=csv_data,
+            file_name=nombre_archivo,
             mime="text/csv"
-        )  
+        )
 
-        st.subheader(f"Analisis del archivo a descargar un Total de ({len(df_filtrado):,} registros)")
+        st.subheader(f"Análisis del archivo a descargar ({len(df_filtrado):,} registros)")
 
-        # Total empresas únicas
+        # Variables para análisis
+        df_rent = df_filtrado[df_filtrado["Cliente"] == 1]
+        df_crec = df_filtrado[df_filtrado["Cliente"] == 0]
         total_empresas = df_filtrado["Identificacion"].nunique()
 
-        # Rentabilizar (Cliente = 1)
-        empresas_rent = df_filtrado[df_filtrado["Cliente"] == 1]["Identificacion"].nunique()
+        empresas_rent = df_rent["Identificacion"].nunique()
         porcentaje_rent = (empresas_rent / total_empresas) * 100
-        patrimonio_rent = df_filtrado[df_filtrado["Cliente"] == 1]["Patrimonio"].mean()
-        personal_rent = df_filtrado[df_filtrado["Cliente"] == 1]["Personal"].mean()
+        patrimonio_rent = df_rent["Patrimonio"].mean()
+        personal_rent = df_rent["Personal"].mean()
 
-        # Crecimiento (Cliente = 0)
-        empresas_crec = df_filtrado[df_filtrado["Cliente"] == 0]["Identificacion"].nunique()
+        empresas_crec = df_crec["Identificacion"].nunique()
         porcentaje_crec = (empresas_crec / total_empresas) * 100
-        patrimonio_crec = df_filtrado[df_filtrado["Cliente"] == 0]["Patrimonio"].mean()
-        personal_crec = df_filtrado[df_filtrado["Cliente"] == 0]["Personal"].mean()
+        patrimonio_crec = df_crec["Patrimonio"].mean()
+        personal_crec = df_crec["Personal"].mean()
 
-        # Mostrar en columnas
         col1, col2 = st.columns(2)
 
         with col1:
@@ -431,22 +395,22 @@ if "resultados" in st.session_state:
             st.metric("Promedio Patrimonio", f"${patrimonio_crec:,.0f}")
             st.metric("Promedio Personal", f"{personal_crec:.0f} empleados")
 
-        # Extraer descripciones únicas
+        # TOP 5 CIIU más frecuentes
         descripcion_ciiu = df_filtrado[['Codigo_CIIU', 'Descripcion_CIIU']].drop_duplicates(subset='Codigo_CIIU')
-
-        # Obtener el top 5 de los códigos CIIU más frecuentes
         top_ciiu = df_filtrado['Codigo_CIIU'].value_counts().head(5).reset_index()
-        top_ciiu.columns = ['Codigo_CIIU', 'Cantidad']  # <-- Usamos el mismo nombre aquí que en descripcion_ciiu
-
-        # Hacer el merge correctamente
+        top_ciiu.columns = ['Codigo_CIIU', 'Cantidad']
         top_ciiu = top_ciiu.merge(descripcion_ciiu, how='left', on='Codigo_CIIU')
 
-        # Gráfico con Plotly, mostrando la descripción en las barras
-        fig_ciiu = px.bar(top_ciiu, x='Codigo_CIIU', y='Cantidad', color='Codigo_CIIU',
-                        title='Top 5 Códigos CIIU más frecuentes',
-                        text='Descripcion_CIIU', template='plotly_white')
-        fig_ciiu.update_traces(textposition='outside')
+        fig_ciiu = px.bar(
+            top_ciiu,
+            x='Codigo_CIIU',
+            y='Cantidad',
+            color='Codigo_CIIU',
+            title='Top 5 Códigos CIIU más frecuentes',
+            hover_data=['Descripcion_CIIU'],
+            template='plotly_white'
+        )
         fig_ciiu.update_layout(showlegend=False)
+        fig_ciiu.update_traces(textposition="outside")
 
-        # Mostrar en Streamlit
         st.plotly_chart(fig_ciiu, use_container_width=True)
