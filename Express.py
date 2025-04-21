@@ -68,7 +68,9 @@ def descargar_df_desde_blob(blob_name):
 
 def crear_base_principal(df_nits):
     try:
-        df_datos = descargar_df_desde_blob(blob_name="BaseCliCC.parquet")
+        #df_datos = descargar_df_desde_blob(blob_name="BaseCliCC.parquet")
+        ruta_acceso = 'files/BaseCliCC.parquet'
+        df_datos = pd.read_parquet(ruta_acceso)
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
         nits_set = set(df_nits["IDENTIFICACION"])
@@ -112,7 +114,9 @@ def completar_nits(uploaded_file):
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
 
         # Descargar base desde Azure
-        df_datos = descargar_df_desde_blob(blob_name="BaseCliente.parquet")
+        #df_datos = descargar_df_desde_blob(blob_name="BaseCliente.parquet")
+        ruta_acceso = 'files/BaseCliente.parquet'
+        df_datos = pd.read_parquet(ruta_acceso)
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
             return False
         
