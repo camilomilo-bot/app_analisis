@@ -12,6 +12,7 @@ import io
 import gc
 import datetime
 
+
 st.set_page_config(layout="wide")
 
 
@@ -29,11 +30,8 @@ def limpiar_memoria():
 def conectar_blob_storage():
     """ Intenta conectar a Azure Blob Storage con reintentos en caso de fallo """
     connection_string = os.getenv("CONNECTION_STRING")
-    
     if not connection_string:
-       
         return None  # Evita crasheos y permite manejarlo en otros lugares
-
     for intento in range(1, MAX_RETRIES + 1):
         try:   
             return BlobServiceClient.from_connection_string(connection_string)
@@ -41,7 +39,6 @@ def conectar_blob_storage():
             if intento < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)  # Esperar antes de reintentar
             else:
-                st.error(f"❌ No se pudo conectar a Azure Blob Storage: {str(e)}")
                 return None  # Retorna None si no se pudo conectar
 
 # Crear conexión
@@ -51,23 +48,6 @@ blob_service_client = conectar_blob_storage()
 if blob_service_client is None:
     st.error("🚨 Aplicación sin acceso, Verifica la conexión. !!!!! Intenta volviendo actualizar la pagina web 😊")
 
-def formatear_moneda(valor):
-    return "${:,.2f}".format(valor)
-
-def subir_df_a_blob(df, blob_name):
-    try:
-        buffer = io.BytesIO()
-        # Comprimir usando Snappy
-        df.to_parquet(buffer, index=False, compression='snappy')
-        buffer.seek(0)
-
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-        blob_client.upload_blob(buffer, overwrite=True)
-        buffer.close()
-        return True
-    except Exception as e:
-        status.update(label=f"Error al subir archivo: {e}", state="error")
-        return False
 
 def descargar_df_desde_blob(blob_name):
     try:
@@ -78,66 +58,32 @@ def descargar_df_desde_blob(blob_name):
 
         with io.BytesIO(blob_client.download_blob().readall()) as stream:
             df = pd.read_parquet(stream)
-
         # Conversión eficiente de columnas
         if "Cliente" in df.columns:
             df["Cliente"] = pd.to_numeric(df["Cliente"], errors="coerce").astype("int8")
-
         return df
     except Exception as e:
         status.update(label=f"Error al descargar archivo: {e}", state="error")
         return None
 
 
-def cargar_archivo(uploaded_file, filename):
-    if not uploaded_file:
-        return False
+def crear_base_principal(df_nits):
     try:
-        df = pd.read_excel(uploaded_file, dtype=str)
-
-        if df.empty:
-            st.warning("⚠️ No se puede subir un DataFrame vacío.")
-            return False
-
-        # Optimización de memoria: conversión de columnas si aplica
-        if "Cliente" in df.columns:
-            df["Cliente"] = pd.to_numeric(df["Cliente"], errors="coerce").astype("int8")
-
-        subir_df_a_blob(df, filename)
-        return len(df)
-    except Exception as e:
-        status.update(label=f"Error: No se pudo subir un archivo a Azure {e}", state="error")
-        return 0
-
-def crear_base_principal():
-    try:
-       
-        df_nits = descargar_df_desde_blob(blob_name="BaseSecundariaCC.parquet")
-        df_datos_cc = descargar_df_desde_blob(blob_name="BasePrincipalCCTotal.parquet")
-        df_datos_cli = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
-
-        df_datos = pd.concat([df_datos_cc, df_datos_cli], ignore_index=True)
-        # Eliminar bases originales para liberar RAM
-        del df_datos_cc, df_datos_cli
-        limpiar_memoria()
+        df_datos = descargar_df_desde_blob(blob_name="BaseCliCC.parquet")
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
-
-
         nits_set = set(df_nits["IDENTIFICACION"])
         # Filtrar los NITs presentes en la base grande
         df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(nits_set)]
         
         del df_nits, df_datos
         limpiar_memoria()
-        # Subir a Azure Blob Storage
-        result = subir_df_a_blob(df_sin_nits, blob_name="BasePrincipalSNITCC.parquet")
-        return result  # True si se subió correctamente, False si hubo un error
+        return df_sin_nits  # True si se subió correctamente, False si hubo un error
 
     except Exception as e:
         status.update(label=f"Error: Creando la Base Principal sin NTS's del archivo de entrada {e}", state="error")
         limpiar_memoria()
-        return False
+        return pd.DataFrame()  # Retorna un DataFrame vacío en caso de error
 
 def completar_nits(uploaded_file):
     try:
@@ -167,11 +113,11 @@ def completar_nits(uploaded_file):
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
 
         # Descargar base desde Azure
-        df_datos = descargar_df_desde_blob(blob_name="BasePrincipal.parquet")
+        df_datos = descargar_df_desde_blob(blob_name="BaseCliente.parquet")
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
-            status.update(label="Error al descargar datos desde Azure.", state="error")
+            #status.update(label="Error al descargar datos desde Azure.", state="error")
             return False
-
+        
         # Merge en lugar de isin para mayor eficiencia
         df_nits["IDENTIFICACION"] = df_nits["IDENTIFICACION"].astype(str)
         df_datos["IDENTIFICACION"] = df_datos["IDENTIFICACION"].astype(str)
@@ -190,20 +136,16 @@ def completar_nits(uploaded_file):
                 (df_filtrado["Personal"] > 0)
             ]
 
-        # Subir archivo procesado
-        return subir_df_a_blob(df=df_filtrado, blob_name="BaseSecundariaCC.parquet")
+        return df_filtrado
 
     except Exception as e:
         status.update(label=f"Error inesperado: {str(e)}", state="error")
-        return False
+        return pd.DataFrame()  # Retorna un DataFrame vacío en caso de error
 
     
-def modelo_principal_sec():
+def modelo_principal_sec(base_secundaria=None, base_principal=None):
 
-    base_secundaria = descargar_df_desde_blob("BaseSecundariaCC.parquet")
-    base_principal = descargar_df_desde_blob("BasePrincipalSNITCC.parquet")
-
-    st.write("### Paso 4: Aplicando modelo usando Patrimonio y Personal...")
+    st.write("### Paso 4: Aplicando modelo usando Patrimonio y Personal.")
     if(len(base_secundaria) > 0):
 
         for col in ["Patrimonio", "Personal"]:
@@ -246,19 +188,18 @@ def modelo_principal_sec():
             "Cliente": base_principal["Cliente"],
             "Distancia": distancias[np.arange(len(base_principal)), mejores_indices], 
             # Mejor oferta
-            "Identificacion_cliente": base_secundaria.iloc[mejores_indices]["IDENTIFICACION"].values,
-            "EMPRESA_cliente": base_secundaria.iloc[mejores_indices]["EMPRESA"].values,
-            "Patrimonio_cliente": base_secundaria.iloc[mejores_indices]["Patrimonio"].values,
-            "Personal_cliente": base_secundaria.iloc[mejores_indices]["Personal"].values,
-            "Codigo_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["ciiu_ccb"].values,
-            "Descripcion_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["Descripcion_CIIU"].values,
+            "Identificacion_cliente": base_secundaria.iloc[mejores_indices]["IDENTIFICACION"].to_numpy(),
+            "EMPRESA_cliente": base_secundaria.iloc[mejores_indices]["EMPRESA"].to_numpy(),
+            "Patrimonio_cliente": base_secundaria.iloc[mejores_indices]["Patrimonio"].to_numpy(),
+            "Personal_cliente": base_secundaria.iloc[mejores_indices]["Personal"].to_numpy(),
+            "Codigo_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["ciiu_ccb"].to_numpy(),
+            "Descripcion_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["Descripcion_CIIU"].to_numpy(),
             })
             
         resultados["Distancia"] = resultados["Distancia"].round(6)
 
         #limpiar dataframe sin uno
-        del base_principal
-        del base_secundaria
+        del base_principal, base_secundaria
         limpiar_memoria()
         return resultados
     else:
@@ -272,23 +213,25 @@ if uploaded_file:
         start_time = time.time()
         with st.status("Procesando datos... por favor espera.", expanded=True) as status:                    
             #result = cargar_archivo(uploaded_file, "temporal1.parquet") 
-            if completar_nits(uploaded_file):
-                    del uploaded_file
-                    limpiar_memoria()
-                    crear_base_principal()
-                    st.write(f"### Paso 3. Completando la Base de NITs")
-                    
-                    resultados = modelo_principal_sec()
-                    
-                    if resultados.empty:
-                        status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
-                        st.error("Ocurrio un error en la Generacion de la recomendacion")
+            df_result = completar_nits(uploaded_file)
+            del uploaded_file
+            limpiar_memoria()
+            if not df_result.empty:      
+                    df_principal = crear_base_principal(df_result)
+                    st.write(f"### Paso 3. Completando la Base de NITs.")
+                    if df_principal.empty:
+                        status.update(label="Error: No se pudo crear la base principal.", state="error")
+                        st.error("Error: No se pudo crear la base principal.")
                     else:
-                        limpiar_memoria()
-                        st.session_state.resultados = resultados
-                        num_generados = len(resultados)
-                        st.write(f"### Paso 5: Generando base resultado.")
-                        status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
+                        resultados = modelo_principal_sec(df_result,df_principal)
+                        if resultados.empty:
+                            status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
+                            st.error("Ocurrio un error en la Generacion de la recomendacion")
+                        else:
+                            limpiar_memoria()
+                            st.session_state.resultados = resultados
+                            st.write(f"### Paso 5: Generando base resultado.")
+                            status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
 
 # Verificar si ya hay resultados en session_state antes de mostrar opciones de filtrado
 if "resultados" in st.session_state:
