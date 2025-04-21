@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import RobustScaler
 from azure.storage.blob import BlobServiceClient
-import plotly.express as px
 import io
 import gc
 import datetime
@@ -18,7 +17,7 @@ st.set_page_config(layout="wide")
 
 # Número máximo de intentos de conexión
 MAX_RETRIES = 3  
-RETRY_DELAY = 5  # Segundos entre intentos
+
 
 load_dotenv()
 
@@ -37,7 +36,7 @@ def conectar_blob_storage():
             return BlobServiceClient.from_connection_string(connection_string)
         except Exception as e:
             if intento < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)  # Esperar antes de reintentar
+                time.sleep(3)  # Esperar antes de reintentar
             else:
                 return None  # Retorna None si no se pudo conectar
 
@@ -115,7 +114,6 @@ def completar_nits(uploaded_file):
         # Descargar base desde Azure
         df_datos = descargar_df_desde_blob(blob_name="BaseCliente.parquet")
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
-            #status.update(label="Error al descargar datos desde Azure.", state="error")
             return False
         
         # Merge en lugar de isin para mayor eficiencia
@@ -146,7 +144,7 @@ def completar_nits(uploaded_file):
 def modelo_principal_sec(base_secundaria=None, base_principal=None):
 
     st.write("### Paso 4: Aplicando modelo usando Patrimonio y Personal.")
-    if(len(base_secundaria) > 0):
+    if(len(base_secundaria) > 0 and len(base_principal) > 0):
 
         for col in ["Patrimonio", "Personal"]:
             base_secundaria[col] = pd.to_numeric(base_secundaria[col], errors="coerce").fillna(0)
@@ -205,14 +203,13 @@ def modelo_principal_sec(base_secundaria=None, base_principal=None):
     else:
         return pd.DataFrame()
 
-st.title("Perfilador Corp Express")
+st.title("Perfilador Express")
 st.write("### Sube el archivo con NITs o Identificaciónes")
 uploaded_file = st.file_uploader("Sube la base con NIT o Identificación", type=["xlsx", "xls"], label_visibility="hidden")
 if uploaded_file:
     if st.button("Generar Recomendaciones"):
         start_time = time.time()
-        with st.status("Procesando datos... por favor espera.", expanded=True) as status:                    
-            #result = cargar_archivo(uploaded_file, "temporal1.parquet") 
+        with st.status("Procesando datos... por favor espera.", expanded=True) as status:
             df_result = completar_nits(uploaded_file)
             del uploaded_file
             limpiar_memoria()
@@ -239,14 +236,12 @@ if "resultados" in st.session_state:
 
     # Separar y ordenar solo una vez
     df_cliente_1 = resultados[resultados["Cliente"] == 1].copy().sort_values(by="Distancia")
-    df_cliente_0 = resultados[resultados["Cliente"] == 0].copy().sort_values(by="Distancia")
+    
+    total_final = int(len(df_cliente_1) / 0.85)
 
-    porcentaje_cliente_0 = 0.19
-    porcentaje_cliente_1 = 0.85
+    n_cliente_0 = total_final - len(df_cliente_1)
 
-    n_cliente_0 = int(len(df_cliente_1) * porcentaje_cliente_0)
-    df_cliente_0 = df_cliente_0.head(n_cliente_0)
-
+    df_cliente_0 = resultados[resultados["Cliente"] == 0].head(n_cliente_0).copy().sort_values(by="Distancia")
     # Concatenar clientes seleccionados
     df_filtrado = pd.concat([df_cliente_1, df_cliente_0], ignore_index=True)
 
@@ -259,7 +254,6 @@ if "resultados" in st.session_state:
     # Datos disponibles
     total_rent = (df_filtrado["Cliente"] == 1).sum()
     total_crec = (df_filtrado["Cliente"] == 0).sum()
-    total_disponibles = len(df_filtrado)
 
     st.markdown("### ¿Cuántos clientes vas a gestionar?")
 
@@ -344,16 +338,6 @@ if "resultados" in st.session_state:
         top_ciiu.columns = ['Codigo_CIIU', 'Cantidad']
         top_ciiu = top_ciiu.merge(descripcion_ciiu, how='left', on='Codigo_CIIU')
 
-        fig_ciiu = px.bar(
-            top_ciiu,
-            x='Codigo_CIIU',
-            y='Cantidad',
-            color='Codigo_CIIU',
-            title='Top 5 Códigos CIIU más frecuentes',
-            hover_data=['Descripcion_CIIU'],
-            template='plotly_white'
-        )
-        fig_ciiu.update_layout(showlegend=False)
-        fig_ciiu.update_traces(textposition="outside")
-
-        st.plotly_chart(fig_ciiu, use_container_width=True)
+        # Mostrar como tabla interactiva
+        st.subheader("Top 5 Códigos CIIU más frecuentes")
+        st.dataframe(top_ciiu)
