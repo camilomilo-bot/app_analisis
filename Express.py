@@ -7,33 +7,18 @@ from sklearn.preprocessing import RobustScaler
 import gc
 import datetime
 
-st.set_page_config(layout="wide")
-
-
 def reiniciar_estado():
     keys = list(st.session_state.keys())
     for key in keys:
         del st.session_state[key]
     limpiar_memoria()
 
-@st.cache_data
-def cargar_base_cliente():
-    return pd.read_parquet('/files/BaseCliente.parquet')
-
-@st.cache_data
-def cargar_base_principal():
-    return pd.read_parquet('/files/BaseCliCC.parquet')
-
-
-
 def limpiar_memoria():
     gc.collect()
 
-
 def crear_base_principal(df_nits):
     try:
-        with st.spinner(""):
-            df_datos = cargar_base_principal()
+        df_datos = pd.read_parquet('/files/BaseCliCC.parquet')
         
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
@@ -77,8 +62,8 @@ def completar_nits(uploaded_file):
             return False
 
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
-        with st.spinner(""):   
-            df_datos = cargar_base_cliente()
+          
+        df_datos = pd.read_parquet('/files/BaseCliente.parquet')
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
             return False
         
@@ -90,7 +75,6 @@ def completar_nits(uploaded_file):
         del df_datos, df_nits
         limpiar_memoria()
        
-
         # Validar columnas antes de filtrar
         if "Patrimonio" in df_filtrado.columns and "Personal" in df_filtrado.columns:
             df_filtrado["Patrimonio"] = pd.to_numeric(df_filtrado["Patrimonio"], errors="coerce")
@@ -107,7 +91,6 @@ def completar_nits(uploaded_file):
         status.update(label=f"Error inesperado: {str(e)}", state="error")
         return pd.DataFrame()  # Retorna un DataFrame vacío en caso de error
 
-    
 def modelo_principal_sec(base_secundaria=None, base_principal=None):
 
     st.write("### Paso 4: Aplicando modelo usando Patrimonio y Personal.")
@@ -138,7 +121,6 @@ def modelo_principal_sec(base_secundaria=None, base_principal=None):
         # Rellenar descripciones faltantes en Cliente == 0 usando el diccionario
         cond = (base_principal["Cliente"] == 0) & (base_principal["Descripcion_CIIU"].isna())
         base_principal.loc[cond, "Descripcion_CIIU"] = base_principal.loc[cond, "ciiu_ccb"].map(ciiu_dict)
-
 
         mejores_indices = np.argmin(distancias, axis=1)
 
@@ -297,7 +279,6 @@ if "resultados" in st.session_state:
 
         patrimonio_crec = resumen.loc["Crecimiento", "Patrimonio"] if "Crecimiento" in resumen.index else 0
         personal_crec = resumen.loc["Crecimiento", "Personal"] if "Crecimiento" in resumen.index else 0
-
 
         col1, col2 = st.columns(2)
         with col1:
