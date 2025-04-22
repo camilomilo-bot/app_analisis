@@ -9,11 +9,20 @@ import datetime
 
 st.set_page_config(layout="wide")
 
+
 def reiniciar_estado():
     keys = list(st.session_state.keys())
     for key in keys:
         del st.session_state[key]
     limpiar_memoria()
+
+@st.cache_data
+def cargar_base_cliente():
+    return pd.read_parquet('/files/BaseCliente.parquet')
+
+@st.cache_data
+def cargar_base_principal():
+    return pd.read_parquet('/files/BaseCliCC.parquet')
 
 def limpiar_memoria():
     gc.collect()
@@ -21,8 +30,7 @@ def limpiar_memoria():
 def crear_base_principal(df_nits):
     try:
         
-        ruta_acceso = '/files/BaseCliCC.parquet'
-        df_datos = pd.read_parquet(ruta_acceso)
+        df_datos = cargar_base_principal()
         
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
@@ -67,8 +75,7 @@ def completar_nits(uploaded_file):
 
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
 
-        ruta_acceso = '/files/BaseCliente.parquet'
-        df_datos = pd.read_parquet(ruta_acceso)
+        df_datos = cargar_base_cliente()
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
             return False
         
@@ -119,7 +126,7 @@ def modelo_principal_sec(base_secundaria=None, base_principal=None):
         clientes_base_principal = scaler.transform(base_principal[["Patrimonio", "Personal"]])
 
         #distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
-        distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="mahalanobis")
+        distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
        
        # Crear diccionario desde los clientes que sí tienen descripción
         ciiu_dict = base_principal[base_principal["Cliente"] == 1].dropna(subset=["Descripcion_CIIU"]).drop_duplicates(subset=["ciiu_ccb"])
