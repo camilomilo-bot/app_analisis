@@ -24,7 +24,7 @@ def limpiar_memoria():
 def crear_base_principal(df_nits):
     try:
         
-        ruta_acceso = 'files/BaseCliCC.parquet'
+        ruta_acceso = '/files/BaseCliCC.parquet'
         df_datos = pd.read_parquet(ruta_acceso)
         
         num_registros = len(df_datos)
@@ -70,7 +70,7 @@ def completar_nits(uploaded_file):
 
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
 
-        ruta_acceso = 'files/BaseCliente.parquet'
+        ruta_acceso = '/files/BaseCliente.parquet'
         df_datos = pd.read_parquet(ruta_acceso)
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
             return False
