@@ -9,17 +9,14 @@ import datetime
 
 st.set_page_config(layout="wide")
 
-
 def reiniciar_estado():
     keys = list(st.session_state.keys())
     for key in keys:
         del st.session_state[key]
     limpiar_memoria()
 
-
 def limpiar_memoria():
     gc.collect()
-
 
 def crear_base_principal(df_nits):
     try:
