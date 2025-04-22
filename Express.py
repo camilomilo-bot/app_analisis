@@ -18,11 +18,11 @@ def reiniciar_estado():
 
 @st.cache_data
 def cargar_base_cliente():
-    return pd.read_parquet('./files/BaseCliente.parquet')
+    return pd.read_parquet('/files/BaseCliente.parquet')
 
 @st.cache_data
 def cargar_base_principal():
-    return pd.read_parquet('./files/BaseCliCC.parquet')
+    return pd.read_parquet('/files/BaseCliCC.parquet')
 
 
 
