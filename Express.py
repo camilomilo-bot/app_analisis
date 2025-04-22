@@ -1,84 +1,41 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 import time
-from dotenv import load_dotenv
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import RobustScaler
-from azure.storage.blob import BlobServiceClient
-import io
 import gc
 import datetime
-
 
 st.set_page_config(layout="wide")
 
 
-# Número máximo de intentos de conexión
-MAX_RETRIES = 3  
+def reiniciar_estado():
+    keys = list(st.session_state.keys())
+    for key in keys:
+        del st.session_state[key]
+    limpiar_memoria()
 
-
-load_dotenv()
-
-container_name = os.getenv("CONTAINER_NAME")
 
 def limpiar_memoria():
     gc.collect()
 
-def conectar_blob_storage():
-    """ Intenta conectar a Azure Blob Storage con reintentos en caso de fallo """
-    connection_string = os.getenv("CONNECTION_STRING")
-    if not connection_string:
-        return None  # Evita crasheos y permite manejarlo en otros lugares
-    for intento in range(1, MAX_RETRIES + 1):
-        try:   
-            return BlobServiceClient.from_connection_string(connection_string)
-        except Exception as e:
-            if intento < MAX_RETRIES:
-                time.sleep(3)  # Esperar antes de reintentar
-            else:
-                return None  # Retorna None si no se pudo conectar
-
-# Crear conexión
-blob_service_client = conectar_blob_storage()
-
-# Si la conexión falló, se puede manejar en otro lugar
-if blob_service_client is None:
-    st.error("🚨 Aplicación sin acceso, Verifica la conexión. !!!!! Intenta volviendo actualizar la pagina web 😊")
-
-
-def descargar_df_desde_blob(blob_name):
-    try:
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-        if not blob_client.exists():
-            st.error(f"❌ El archivo {blob_name} no se encontró en Azure Blob Storage.")
-            return None
-
-        with io.BytesIO(blob_client.download_blob().readall()) as stream:
-            df = pd.read_parquet(stream)
-        # Conversión eficiente de columnas
-        if "Cliente" in df.columns:
-            df["Cliente"] = pd.to_numeric(df["Cliente"], errors="coerce").astype("int8")
-        return df
-    except Exception as e:
-        status.update(label=f"Error al descargar archivo: {e}", state="error")
-        return None
-
 
 def crear_base_principal(df_nits):
     try:
-        #df_datos = descargar_df_desde_blob(blob_name="BaseCliCC.parquet")
-        ruta_acceso = '/files/BaseCliCC.parquet'
+        
+        ruta_acceso = 'files/BaseCliCC.parquet'
         df_datos = pd.read_parquet(ruta_acceso)
+        
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
         nits_set = set(df_nits["IDENTIFICACION"])
         # Filtrar los NITs presentes en la base grande
-        df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(nits_set)]
+        df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(nits_set)].copy()
         
-        del df_nits, df_datos
+        del df_nits, df_datos, nits_set
         limpiar_memoria()
+        
         return df_sin_nits  # True si se subió correctamente, False si hubo un error
 
     except Exception as e:
@@ -90,7 +47,7 @@ def completar_nits(uploaded_file):
     try:
         # Leer solo la primera columna del archivo para identificar NITs
         df_nits = pd.read_excel(uploaded_file, dtype=str, usecols=[0])
-
+        
         if df_nits.empty:
             status.update(label="Error: El archivo está vacío.", state="error")
             return False
@@ -113,9 +70,7 @@ def completar_nits(uploaded_file):
 
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
 
-        # Descargar base desde Azure
-        #df_datos = descargar_df_desde_blob(blob_name="BaseCliente.parquet")
-        ruta_acceso = '/files/BaseCliente.parquet'
+        ruta_acceso = 'files/BaseCliente.parquet'
         df_datos = pd.read_parquet(ruta_acceso)
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
             return False
@@ -124,9 +79,10 @@ def completar_nits(uploaded_file):
         df_nits["IDENTIFICACION"] = df_nits["IDENTIFICACION"].astype(str)
         df_datos["IDENTIFICACION"] = df_datos["IDENTIFICACION"].astype(str)
 
-        df_filtrado = df_datos.merge(df_nits, on="IDENTIFICACION", how="inner")
+        df_filtrado = df_datos.merge(df_nits, on="IDENTIFICACION", how="inner").copy()
         del df_datos, df_nits
         limpiar_memoria()
+       
 
         # Validar columnas antes de filtrar
         if "Patrimonio" in df_filtrado.columns and "Personal" in df_filtrado.columns:
@@ -137,7 +93,7 @@ def completar_nits(uploaded_file):
                 (df_filtrado["Patrimonio"] > 0) &
                 (df_filtrado["Personal"] > 0)
             ]
-
+        
         return df_filtrado
 
     except Exception as e:
@@ -160,7 +116,7 @@ def modelo_principal_sec(base_secundaria=None, base_principal=None):
 
         # Filtrar donde el código CIIU numérico de base_principal esté en los códigos de base_secundaria
         base_principal = base_principal[base_principal["ciiu_ccb"].isin(codigos_ciiu_secundaria)]
-       
+        
         scaler = RobustScaler()
         clientes_base_secundaria = scaler.fit_transform(base_secundaria[["Patrimonio", "Personal"]])
         clientes_base_principal = scaler.transform(base_principal[["Patrimonio", "Personal"]])
@@ -199,19 +155,22 @@ def modelo_principal_sec(base_secundaria=None, base_principal=None):
             })
             
         resultados["Distancia"] = resultados["Distancia"].round(6)
-
+        
         #limpiar dataframe sin uno
         del base_principal, base_secundaria
         limpiar_memoria()
+       
         return resultados
     else:
         return pd.DataFrame()
 
 st.title("Perfilador Express")
 st.write("### Sube el archivo con NITs o Identificaciónes")
+
 uploaded_file = st.file_uploader("Sube la base con NIT o Identificación", type=["xlsx", "xls"], label_visibility="hidden")
 if uploaded_file:
     if st.button("Generar Recomendaciones"):
+        reiniciar_estado()
         start_time = time.time()
         with st.status("Procesando datos... por favor espera.", expanded=True) as status:
             df_result = completar_nits(uploaded_file)
@@ -234,33 +193,38 @@ if uploaded_file:
                             st.write(f"### Paso 5: Generando base resultado.")
                             status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
 
-# Verificar si ya hay resultados en session_state antes de mostrar opciones de filtrado
 if "resultados" in st.session_state:
     resultados = st.session_state.resultados
 
-    # Separar y ordenar solo una vez
-    df_cliente_1 = resultados[resultados["Cliente"] == 1].copy().sort_values(by="Distancia")
-    
+    # Convertir tipos para ahorrar RAM
+    resultados["Cliente"] = resultados["Cliente"].astype("int8")
+    resultados["Codigo_CIIU"] = resultados["Codigo_CIIU"].astype("category")
+    resultados["Descripcion_CIIU"] = resultados["Descripcion_CIIU"].astype("category")
+
+    # Separar y ordenar
+    df_cliente_1 = resultados[resultados["Cliente"] == 1].sort_values(by="Distancia")
     total_final = int(len(df_cliente_1) / 0.85)
-
     n_cliente_0 = total_final - len(df_cliente_1)
+    df_cliente_0 = resultados[resultados["Cliente"] == 0].sort_values(by="Distancia").head(n_cliente_0)
 
-    df_cliente_0 = resultados[resultados["Cliente"] == 0].head(n_cliente_0).copy().sort_values(by="Distancia")
+    # Liberar resultados
+    del resultados
+    limpiar_memoria()
+
     # Concatenar clientes seleccionados
     df_filtrado = pd.concat([df_cliente_1, df_cliente_0], ignore_index=True)
-
-    # Limpiar memoria de intermedios
-    del resultados
-    del df_cliente_1
-    del df_cliente_0
+    del df_cliente_1, df_cliente_0, total_final, n_cliente_0
     limpiar_memoria()
 
     # Datos disponibles
-    total_rent = (df_filtrado["Cliente"] == 1).sum()
-    total_crec = (df_filtrado["Cliente"] == 0).sum()
+    grupo = df_filtrado.groupby("Cliente")
+    df_rent = grupo.get_group(1)
+    df_crec = grupo.get_group(0)
+
+    total_rent = len(df_rent)
+    total_crec = len(df_crec)
 
     st.markdown("### ¿Cuántos clientes vas a gestionar?")
-
     col1, col2 = st.columns(2)
     with col1:
         num_rent = st.number_input(
@@ -274,15 +238,16 @@ if "resultados" in st.session_state:
         )
 
     if num_rent > 0 or num_crec > 0:
-        df_rent = df_filtrado[df_filtrado["Cliente"] == 1].head(num_rent)
-        df_crec = df_filtrado[df_filtrado["Cliente"] == 0].head(num_crec)
-        df_filtrado = pd.concat([df_rent, df_crec]).sort_values(by="Distancia")
-        del df_rent, df_crec
+        df_rent_sel = df_rent.head(num_rent)
+        df_crec_sel = df_crec.head(num_crec)
+        df_filtrado_final = pd.concat([df_rent_sel, df_crec_sel]).sort_values(by="Distancia")
+
+        del df_rent_sel, df_crec_sel
         limpiar_memoria()
 
-        st.write(f"### 🎯 Registros generados: {len(df_filtrado):,}")
+        st.write(f"### 🎯 Registros generados: {len(df_filtrado_final):,}")
 
-        df_estilizado = df_filtrado.head(200).style.format({
+        df_estilizado = df_filtrado_final.head(200).style.format({
             "Patrimonio": "${:,.2f}",
             "Personal": "{:,}",
             "Patrimonio_cliente": "${:,.2f}",
@@ -292,11 +257,9 @@ if "resultados" in st.session_state:
         st.markdown("**📋 Mostrando solo los primeros 200 registros**")
         st.dataframe(df_estilizado)
 
-        # Generar nombre de archivo
+        # CSV
         nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime('%d-%m-%Y')}.csv"
-
-        # Convertir a CSV solo si hay registros
-        csv_data = df_filtrado.to_csv(index=False, sep=";", decimal=",", encoding="latin-1").encode("UTF-8")
+        csv_data = df_filtrado_final.to_csv(index=False, sep=";", decimal=",", encoding="latin-1").encode("UTF-8")
 
         st.download_button(
             label="Descargar CSV",
@@ -305,25 +268,31 @@ if "resultados" in st.session_state:
             mime="text/csv"
         )
 
-        st.subheader(f"Análisis del archivo a descargar ({len(df_filtrado):,} registros)")
+        st.subheader(f"Análisis del archivo a descargar ({len(df_filtrado_final):,} registros)")
 
-        # Variables para análisis
-        df_rent = df_filtrado[df_filtrado["Cliente"] == 1]
-        df_crec = df_filtrado[df_filtrado["Cliente"] == 0]
-        total_empresas = df_filtrado["Identificacion"].nunique()
+        # Métricas resumen
+        total_empresas = df_filtrado_final["Identificacion"].nunique()
+        resumen = df_filtrado_final.groupby("Cliente").agg({
+            "Identificacion": "nunique",
+            "Patrimonio": "mean",
+            "Personal": "mean"
+        }).rename(index={1: "Rentabilizar", 0: "Crecimiento"})
 
-        empresas_rent = df_rent["Identificacion"].nunique()
-        porcentaje_rent = (empresas_rent / total_empresas) * 100
-        patrimonio_rent = df_rent["Patrimonio"].mean()
-        personal_rent = df_rent["Personal"].mean()
+        # Preparar métricas con valores por defecto
+        empresas_rent = resumen.loc["Rentabilizar", "Identificacion"] if "Rentabilizar" in resumen.index else 0
+        empresas_crec = resumen.loc["Crecimiento", "Identificacion"] if "Crecimiento" in resumen.index else 0
 
-        empresas_crec = df_crec["Identificacion"].nunique()
-        porcentaje_crec = (empresas_crec / total_empresas) * 100
-        patrimonio_crec = df_crec["Patrimonio"].mean()
-        personal_crec = df_crec["Personal"].mean()
+        porcentaje_rent = (empresas_rent / total_empresas) * 100 if total_empresas else 0
+        porcentaje_crec = (empresas_crec / total_empresas) * 100 if total_empresas else 0
+
+        patrimonio_rent = resumen.loc["Rentabilizar", "Patrimonio"] if "Rentabilizar" in resumen.index else 0
+        personal_rent = resumen.loc["Rentabilizar", "Personal"] if "Rentabilizar" in resumen.index else 0
+
+        patrimonio_crec = resumen.loc["Crecimiento", "Patrimonio"] if "Crecimiento" in resumen.index else 0
+        personal_crec = resumen.loc["Crecimiento", "Personal"] if "Crecimiento" in resumen.index else 0
+
 
         col1, col2 = st.columns(2)
-
         with col1:
             st.markdown("### Rentabilizar")
             st.metric("Cantidad de Empresas", empresas_rent, f"{porcentaje_rent:.1f}% del total")
@@ -336,12 +305,15 @@ if "resultados" in st.session_state:
             st.metric("Promedio Patrimonio", f"${patrimonio_crec:,.0f}")
             st.metric("Promedio Personal", f"{personal_crec:.0f} empleados")
 
-        # TOP 5 CIIU más frecuentes
-        descripcion_ciiu = df_filtrado[['Codigo_CIIU', 'Descripcion_CIIU']].drop_duplicates(subset='Codigo_CIIU')
-        top_ciiu = df_filtrado['Codigo_CIIU'].value_counts().head(5).reset_index()
+        # Top CIIU
+        descripcion_ciiu = df_filtrado_final[['Codigo_CIIU', 'Descripcion_CIIU']].drop_duplicates(subset='Codigo_CIIU')
+        top_ciiu = df_filtrado_final['Codigo_CIIU'].value_counts().head(5).reset_index()
         top_ciiu.columns = ['Codigo_CIIU', 'Cantidad']
         top_ciiu = top_ciiu.merge(descripcion_ciiu, how='left', on='Codigo_CIIU')
 
-        # Mostrar como tabla interactiva
         st.subheader("Top 5 Códigos CIIU más frecuentes")
         st.dataframe(top_ciiu)
+
+        # Limpiar
+        del df_filtrado, df_filtrado_final, df_rent, df_crec, top_ciiu, descripcion_ciiu, resumen
+        limpiar_memoria()
