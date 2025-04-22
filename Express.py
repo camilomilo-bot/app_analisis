@@ -18,19 +18,22 @@ def reiniciar_estado():
 
 @st.cache_data
 def cargar_base_cliente():
-    return pd.read_parquet('/files/BaseCliente.parquet')
+    return pd.read_parquet('./files/BaseCliente.parquet')
 
 @st.cache_data
 def cargar_base_principal():
-    return pd.read_parquet('/files/BaseCliCC.parquet')
+    return pd.read_parquet('./files/BaseCliCC.parquet')
+
+
 
 def limpiar_memoria():
     gc.collect()
 
+
 def crear_base_principal(df_nits):
     try:
-        
-        df_datos = cargar_base_principal()
+        with st.spinner(""):
+            df_datos = cargar_base_principal()
         
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
@@ -74,8 +77,8 @@ def completar_nits(uploaded_file):
             return False
 
         st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
-
-        df_datos = cargar_base_cliente()
+        with st.spinner(""):   
+            df_datos = cargar_base_cliente()
         if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
             return False
         
