@@ -7,6 +7,8 @@ from sklearn.preprocessing import RobustScaler
 import gc
 import datetime
 
+st.set_page_config(layout="wide")
+
 def reiniciar_estado():
     keys = list(st.session_state.keys())
     for key in keys:
@@ -18,8 +20,8 @@ def limpiar_memoria():
 
 def crear_base_principal(df_nits):
     try:
-        df_datos = pd.read_parquet('/files/BaseCliCC.parquet')
         
+        df_datos = pd.read_parquet('/files/BaseCliCC.parquet')
         num_registros = len(df_datos)
         st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
         nits_set = set(df_nits["IDENTIFICACION"])
@@ -121,6 +123,7 @@ def modelo_principal_sec(base_secundaria=None, base_principal=None):
         # Rellenar descripciones faltantes en Cliente == 0 usando el diccionario
         cond = (base_principal["Cliente"] == 0) & (base_principal["Descripcion_CIIU"].isna())
         base_principal.loc[cond, "Descripcion_CIIU"] = base_principal.loc[cond, "ciiu_ccb"].map(ciiu_dict)
+
 
         mejores_indices = np.argmin(distancias, axis=1)
 
@@ -279,6 +282,7 @@ if "resultados" in st.session_state:
 
         patrimonio_crec = resumen.loc["Crecimiento", "Patrimonio"] if "Crecimiento" in resumen.index else 0
         personal_crec = resumen.loc["Crecimiento", "Personal"] if "Crecimiento" in resumen.index else 0
+
 
         col1, col2 = st.columns(2)
         with col1:
