@@ -6,6 +6,7 @@ from scipy.spatial.distance import cdist
 from sklearn.preprocessing import RobustScaler
 import gc
 import datetime
+from modelo import modelo_principal_rentabilizar
 
 st.set_page_config(layout="wide")
 
@@ -18,143 +19,128 @@ def reiniciar_estado():
 def limpiar_memoria():
     gc.collect()
 
-def crear_base_principal(df_nits):
+def estandarizar_columna_nits(df):
+    df_resultado = df.copy()
+    
+    # Verificar si el archivo tiene encabezados o si el primer registro son datos
+    primera_columna = df_resultado.columns[0]
+    
+    # Verificar si el encabezado parece ser un NIT (dato numérico)
+    es_dato = False
     try:
+        # Si se puede convertir a número o si parece un NIT (solo dígitos)
+        if str(primera_columna).isdigit() or str(primera_columna).replace('.', '').isdigit():
+            es_dato = True
+    except:
+        pass
+    
+    if es_dato:
+        # El encabezado actual es un dato, lo que significa que no hay encabezados reales
+        # Guardamos la primera fila (que está en los encabezados) y restablecemos los índices
+        primer_registro = pd.Series([primera_columna] + list(df_resultado.columns[1:]), 
+                                   name=0)
         
-        df_datos = pd.read_parquet('/files/BaseCliCC.parquet')
-        num_registros = len(df_datos)
-        st.write(f"### Paso 2. Cargando Base Principal con un total de {num_registros:,}".replace(",", ".") + " registros.")
-        nits_set = set(df_nits["IDENTIFICACION"])
-        # Filtrar los NITs presentes en la base grande
-        df_sin_nits = df_datos[~df_datos["IDENTIFICACION"].isin(nits_set)].copy()
+        # Crear un nuevo DataFrame con el encabezado correcto
+        nuevas_columnas = ['IDENTIFICACION'] + [f'Columna_{i+2}' for i in range(len(df_resultado.columns)-1)]
+        df_resultado.columns = nuevas_columnas
         
-        del df_nits, df_datos, nits_set
-        limpiar_memoria()
+        # Añadir el primer registro al principio del DataFrame
+        df_resultado = pd.concat([pd.DataFrame([primer_registro.values], columns=nuevas_columnas), 
+                                 df_resultado]).reset_index(drop=True)
         
-        return df_sin_nits  # True si se subió correctamente, False si hubo un error
-
-    except Exception as e:
-        status.update(label=f"Error: Creando la Base Principal sin NTS's del archivo de entrada {e}", state="error")
-        limpiar_memoria()
-        return pd.DataFrame()  # Retorna un DataFrame vacío en caso de error
-
-def completar_nits(uploaded_file):
-    try:
-        # Leer solo la primera columna del archivo para identificar NITs
-        df_nits = pd.read_excel(uploaded_file, dtype=str, usecols=[0])
-        
-        if df_nits.empty:
-            status.update(label="Error: El archivo está vacío.", state="error")
-            return False
-
-        # Identificar si hay encabezado incorrecto
-        primera_columna = df_nits.columns[0]
-        if str(primera_columna).isdigit():
-            # Restaurar primera fila como datos si no hay encabezado
-            df_nits.loc[-1] = df_nits.columns
-            df_nits.index = df_nits.index + 1
-            df_nits = df_nits.sort_index()
-            df_nits.columns = ["IDENTIFICACION"]
-        else:
-            df_nits.rename(columns={primera_columna: "IDENTIFICACION"}, inplace=True)
-
-        numero_registros = len(df_nits)
-        if numero_registros == 0:
-            status.update(label="El archivo no contiene registros.", state="error")
-            return False
-
-        st.write(f"### Paso 1: Cargando Archivo `{uploaded_file.name}` con {numero_registros} registros.")
-          
-        df_datos = pd.read_parquet('/files/BaseCliente.parquet')
-        if df_datos is None or "IDENTIFICACION" not in df_datos.columns:
-            return False
-        
-        # Merge en lugar de isin para mayor eficiencia
-        df_nits["IDENTIFICACION"] = df_nits["IDENTIFICACION"].astype(str)
-        df_datos["IDENTIFICACION"] = df_datos["IDENTIFICACION"].astype(str)
-
-        df_filtrado = df_datos.merge(df_nits, on="IDENTIFICACION", how="inner").copy()
-        del df_datos, df_nits
-        limpiar_memoria()
-       
-        # Validar columnas antes de filtrar
-        if "Patrimonio" in df_filtrado.columns and "Personal" in df_filtrado.columns:
-            df_filtrado["Patrimonio"] = pd.to_numeric(df_filtrado["Patrimonio"], errors="coerce")
-            df_filtrado["Personal"] = pd.to_numeric(df_filtrado["Personal"], errors="coerce")
-
-            df_filtrado = df_filtrado[
-                (df_filtrado["Patrimonio"] > 0) &
-                (df_filtrado["Personal"] > 0)
-            ]
-        
-        return df_filtrado
-
-    except Exception as e:
-        status.update(label=f"Error inesperado: {str(e)}", state="error")
-        return pd.DataFrame()  # Retorna un DataFrame vacío en caso de error
-
-def modelo_principal_sec(base_secundaria=None, base_principal=None):
-
-    st.write("### Paso 4: Aplicando modelo usando Patrimonio y Personal.")
-    if(len(base_secundaria) > 0 and len(base_principal) > 0):
-
-        for col in ["Patrimonio", "Personal"]:
-            base_secundaria[col] = pd.to_numeric(base_secundaria[col], errors="coerce").fillna(0)
-            base_principal[col] = pd.to_numeric(base_principal[col], errors="coerce").fillna(0)
-        
-        codigos_ciiu_secundaria = set(
-                base_secundaria["ciiu_ccb"].unique()
-            )
-
-        # Filtrar donde el código CIIU numérico de base_principal esté en los códigos de base_secundaria
-        base_principal = base_principal[base_principal["ciiu_ccb"].isin(codigos_ciiu_secundaria)]
-        
-        scaler = RobustScaler()
-        clientes_base_secundaria = scaler.fit_transform(base_secundaria[["Patrimonio", "Personal"]])
-        clientes_base_principal = scaler.transform(base_principal[["Patrimonio", "Personal"]])
-
-        #distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
-        distancias = cdist(clientes_base_principal, clientes_base_secundaria, metric="euclidean")
-       
-       # Crear diccionario desde los clientes que sí tienen descripción
-        ciiu_dict = base_principal[base_principal["Cliente"] == 1].dropna(subset=["Descripcion_CIIU"]).drop_duplicates(subset=["ciiu_ccb"])
-        ciiu_dict = dict(zip(ciiu_dict["ciiu_ccb"], ciiu_dict["Descripcion_CIIU"]))
-
-        # Rellenar descripciones faltantes en Cliente == 0 usando el diccionario
-        cond = (base_principal["Cliente"] == 0) & (base_principal["Descripcion_CIIU"].isna())
-        base_principal.loc[cond, "Descripcion_CIIU"] = base_principal.loc[cond, "ciiu_ccb"].map(ciiu_dict)
-
-
-        mejores_indices = np.argmin(distancias, axis=1)
-
-        resultados = pd.DataFrame({
-            "Identificacion": base_principal["IDENTIFICACION"],
-            "EMPRESA": base_principal["EMPRESA"],
-            "Tipo_Documento": base_principal["Tipo_Documento"].astype(str).str.upper(),
-            "Patrimonio": base_principal["Patrimonio"],
-            "Personal": base_principal["Personal"],
-            "Codigo_CIIU": base_principal["ciiu_ccb"],
-            "Descripcion_CIIU": base_principal["Descripcion_CIIU"],
-            "Cliente": base_principal["Cliente"],
-            "Distancia": distancias[np.arange(len(base_principal)), mejores_indices], 
-            # Mejor oferta
-            "Identificacion_cliente": base_secundaria.iloc[mejores_indices]["IDENTIFICACION"].to_numpy(),
-            "EMPRESA_cliente": base_secundaria.iloc[mejores_indices]["EMPRESA"].to_numpy(),
-            "Patrimonio_cliente": base_secundaria.iloc[mejores_indices]["Patrimonio"].to_numpy(),
-            "Personal_cliente": base_secundaria.iloc[mejores_indices]["Personal"].to_numpy(),
-            "Codigo_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["ciiu_ccb"].to_numpy(),
-            "Descripcion_CIIU_Cliente": base_secundaria.iloc[mejores_indices]["Descripcion_CIIU"].to_numpy(),
-            })
-            
-        resultados["Distancia"] = resultados["Distancia"].round(6)
-        
-        #limpiar dataframe sin uno
-        del base_principal, base_secundaria
-        limpiar_memoria()
-       
-        return resultados
     else:
-        return pd.DataFrame()
+        # El encabezado es un encabezado real, simplemente lo renombramos
+        nuevo_nombre = {primera_columna: 'IDENTIFICACION'}
+        df_resultado = df_resultado.rename(columns=nuevo_nombre)
+    st.write(f"### Paso 1: Leyendo archivo ingresado {len(df_resultado)} NITs.")
+    return df_resultado
+
+def modelo_principal_crecimiento(base_secundaria=None, base_principal=None):
+        base_principal = base_principal.reset_index(drop=True)
+        base_secundaria = base_secundaria.reset_index(drop=True)
+        scaler = RobustScaler()
+        base_secundaria_scaled = scaler.fit_transform(base_secundaria[["PATRIMONIO", "PERSONAL"]])
+        base_principal_scaled = scaler.transform(base_principal[["PATRIMONIO", "PERSONAL"]])
+        distancias = cdist(base_principal_scaled, base_secundaria_scaled, metric="euclidean")
+        mejores_indices = np.argmin(distancias, axis=1)
+        
+        resultados = pd.DataFrame({
+            "IDENTIFICACION": base_principal["IDENTIFICACION"].reset_index(drop=True),
+            "RAZON_SOCIAL": base_principal["RAZON_SOCIAL"].reset_index(drop=True),
+            "TIPO_DOCUMENTO": base_principal["TIPO_DOCUMENTO"].astype(str).str.upper().reset_index(drop=True),
+            "PATRIMONIO": base_principal["PATRIMONIO"].reset_index(drop=True),
+            "PERSONAL": base_principal["PERSONAL"].reset_index(drop=True),
+            "CIIU": base_principal["CIIU"].reset_index(drop=True),
+            "DESCRIPCION_CIIU": base_principal["DESCRIPCION_CIIU"].reset_index(drop=True),
+            "CLIENTE": base_principal["CLIENTE"].reset_index(drop=True),
+            "DISTANCIA": distancias[np.arange(len(base_principal)), mejores_indices],
+            
+        })
+        
+        #organizar resultados desde distanica mayotr a menor
+        resultados = resultados.sort_values(by="DISTANCIA", ascending=True).reset_index(drop=True)
+        resultados["DISTANCIA"] = resultados["DISTANCIA"].round(6)
+        resultados["DISTANCIA"] = [round(0.1 * (i + 1), 1) for i in range(len(resultados))]
+        #tomar solo 5000 registros 
+        resultados = resultados.head(5000)
+        return resultados
+
+def obtener_base_clientes():
+    #df_clientes = pd.read_csv('../Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_clientes = pd.read_csv('/files/Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_clientes['IDENTIFICACION'] = df_clientes['IDENTIFICACION'].astype(str)
+    df_clientes.columns = df_clientes.columns.str.upper()
+    df_clientes['CLIENTE'] = 1
+    #Eliminar duplicados apartir de identificacion
+    df_clientes = df_clientes.drop_duplicates(subset=['IDENTIFICACION'])
+    return df_clientes
+
+def obtener_base_cc():
+    #df_cc = pd.read_csv('../files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_cc = pd.read_csv('/files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
+    
+    df_cc['IDENTIFICACION'] = df_cc['IDENTIFICACION'].astype(str)
+    return df_cc
+
+def aplicar_modelos(base_nits):
+    # Obtener las bases de datos
+    st.write(f"### Paso 2: Obteniendo bases de datos.")
+    df_clientes = obtener_base_clientes()
+    df_cc = obtener_base_cc()
+    #pasar columna identificacion a object
+    
+    #pasar a mayusculas las columnas de base_principal
+    
+    df_cc.columns = df_cc.columns.str.upper()
+    
+    df_base_secundaria = df_clientes[df_clientes['IDENTIFICACION'].isin(base_nits['IDENTIFICACION'])].copy().reset_index(drop=True)
+    st.write(f"### Paso 3: Aplicando modelos.")
+    df_crecimiento = modelo_principal_crecimiento(base_secundaria=df_base_secundaria, base_principal=df_cc)
+    df_rentabilizar = modelo_principal_rentabilizar(base_secundaria=base_nits, base_principal=df_clientes)
+    #df_rentabilizar = modelo_principal_rentabilizar(base_secundaria=df_base_secundaria, base_principal=df_clientes)
+    df_resultados = unificar_bases(df_rentabilizar, df_crecimiento)
+    return df_resultados
+
+def unificar_bases(df_rentabilizar, df_crecimiento):
+    #Columnas deseadas
+    columnas_deseadas = [
+        "IDENTIFICACION",
+        "RAZON_SOCIAL",
+        "TIPO_DOCUMENTO",
+        "PATRIMONIO",
+        "PERSONAL",
+        "CIIU",
+        "DESCRIPCION_CIIU",
+        "CLIENTE",
+        "DISTANCIA",
+    ]
+    #Aplicar las columnas a cada base
+    df_rentabilizar = df_rentabilizar[columnas_deseadas]
+    df_crecimiento = df_crecimiento[columnas_deseadas]
+    
+    # Unir las bases de datos de rentabilizar y crecimiento
+    df_unificado = pd.concat([df_rentabilizar, df_crecimiento], ignore_index=True)
+    return df_unificado
 
 st.title("Perfilador Express")
 st.write("### Sube el archivo con NITs o Identificaciónes")
@@ -165,51 +151,44 @@ if uploaded_file:
         reiniciar_estado()
         start_time = time.time()
         with st.status("Procesando datos... por favor espera.", expanded=True) as status:
-            df_result = completar_nits(uploaded_file)
-            del uploaded_file
-            limpiar_memoria()
-            if not df_result.empty:      
-                    df_principal = crear_base_principal(df_result)
-                    st.write(f"### Paso 3. Completando la Base de NITs.")
-                    if df_principal.empty:
-                        status.update(label="Error: No se pudo crear la base principal.", state="error")
-                        st.error("Error: No se pudo crear la base principal.")
-                    else:
-                        resultados = modelo_principal_sec(df_result,df_principal)
-                        if resultados.empty:
-                            status.update(label=f"Ocurrio un error en la Generacion de la recomendacion", state="error")
-                            st.error("Ocurrio un error en la Generacion de la recomendacion")
-                        else:
-                            limpiar_memoria()
-                            st.session_state.resultados = resultados
-                            st.write(f"### Paso 5: Generando base resultado.")
-                            status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
+            
+            base_nits = pd.read_excel(uploaded_file, dtype=str)
+            
+            df_resultados = aplicar_modelos(base_nits=estandarizar_columna_nits(base_nits))
+            if df_resultados.empty:
+                status.update(label="Error: No se encontraron registros en la base de datos.", state="error")
+            else:
+                limpiar_memoria()
+                st.session_state.resultados = df_resultados
+                st.write(f"### Paso 4: Generando base resultado.")
+                status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
 
 if "resultados" in st.session_state:
     resultados = st.session_state.resultados
-
+    
     # Convertir tipos para ahorrar RAM
-    resultados["Cliente"] = resultados["Cliente"].astype("int8")
-    resultados["Codigo_CIIU"] = resultados["Codigo_CIIU"].astype("category")
-    resultados["Descripcion_CIIU"] = resultados["Descripcion_CIIU"].astype("category")
+    resultados["CLIENTE"] = resultados["CLIENTE"].astype("int8")
+    resultados["CIIU"] = resultados["CIIU"].astype("category")
+    resultados["DESCRIPCION_CIIU"] = resultados["DESCRIPCION_CIIU"].astype("category")
 
     # Separar y ordenar
-    df_cliente_1 = resultados[resultados["Cliente"] == 1].sort_values(by="Distancia")
-    total_final = int(len(df_cliente_1) / 0.85)
+    df_cliente_1 = resultados[resultados["CLIENTE"] == 1].head(20_000).sort_values(by="DISTANCIA")
+    #df_cliente_1 = resultados[resultados["CLIENTE"] == 1].head(20_000)
+    total_final = int(len(df_cliente_1) / 0.80)
     n_cliente_0 = total_final - len(df_cliente_1)
-    df_cliente_0 = resultados[resultados["Cliente"] == 0].sort_values(by="Distancia").head(n_cliente_0)
-
+    df_cliente_0 = resultados[resultados["CLIENTE"] == 0].sort_values(by="DISTANCIA").head(n_cliente_0)
+    #df_cliente_0 = resultados[resultados["CLIENTE"] == 0].head(n_cliente_0)
     # Liberar resultados
     del resultados
     limpiar_memoria()
 
     # Concatenar clientes seleccionados
-    df_filtrado = pd.concat([df_cliente_1, df_cliente_0], ignore_index=True)
+    df_filtrado = pd.concat([df_cliente_1, df_cliente_0])
     del df_cliente_1, df_cliente_0, total_final, n_cliente_0
     limpiar_memoria()
-
+   
     # Datos disponibles
-    grupo = df_filtrado.groupby("Cliente")
+    grupo = df_filtrado.groupby("CLIENTE")
     df_rent = grupo.get_group(1)
     df_crec = grupo.get_group(0)
 
@@ -232,18 +211,17 @@ if "resultados" in st.session_state:
     if num_rent > 0 or num_crec > 0:
         df_rent_sel = df_rent.head(num_rent)
         df_crec_sel = df_crec.head(num_crec)
-        df_filtrado_final = pd.concat([df_rent_sel, df_crec_sel]).sort_values(by="Distancia")
-
+        #df_filtrado_final = pd.concat([df_rent_sel, df_crec_sel]).sort_values(by="Distancia")
+        df_filtrado_final = pd.concat([df_rent_sel, df_crec_sel])
         del df_rent_sel, df_crec_sel
         limpiar_memoria()
 
         st.write(f"### 🎯 Registros generados: {len(df_filtrado_final):,}")
 
         df_estilizado = df_filtrado_final.head(200).style.format({
-            "Patrimonio": "${:,.2f}",
-            "Personal": "{:,}",
-            "Patrimonio_cliente": "${:,.2f}",
-            "Personal_cliente": "{:,}"
+            "PATRIMONIO": "${:,.2f}",
+            "PERSONAL": "{:,}",
+            
         })
 
         st.markdown("**📋 Mostrando solo los primeros 200 registros**")
@@ -251,7 +229,7 @@ if "resultados" in st.session_state:
 
         # CSV
         nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime('%d-%m-%Y')}.csv"
-        csv_data = df_filtrado_final.to_csv(index=False, sep=";", decimal=",", encoding="latin-1").encode("UTF-8")
+        csv_data = df_filtrado_final.to_csv(index=False, sep=";", decimal=",", encoding='utf-8')
 
         st.download_button(
             label="Descargar CSV",
@@ -263,25 +241,25 @@ if "resultados" in st.session_state:
         st.subheader(f"Análisis del archivo a descargar ({len(df_filtrado_final):,} registros)")
 
         # Métricas resumen
-        total_empresas = df_filtrado_final["Identificacion"].nunique()
-        resumen = df_filtrado_final.groupby("Cliente").agg({
-            "Identificacion": "nunique",
-            "Patrimonio": "mean",
-            "Personal": "mean"
+        total_empresas = df_filtrado_final["IDENTIFICACION"].nunique()
+        resumen = df_filtrado_final.groupby("CLIENTE").agg({
+            "IDENTIFICACION": "nunique",
+            "PATRIMONIO": "mean",
+            "PERSONAL": "mean"
         }).rename(index={1: "Rentabilizar", 0: "Crecimiento"})
 
         # Preparar métricas con valores por defecto
-        empresas_rent = resumen.loc["Rentabilizar", "Identificacion"] if "Rentabilizar" in resumen.index else 0
-        empresas_crec = resumen.loc["Crecimiento", "Identificacion"] if "Crecimiento" in resumen.index else 0
+        empresas_rent = resumen.loc["Rentabilizar", "IDENTIFICACION"] if "Rentabilizar" in resumen.index else 0
+        empresas_crec = resumen.loc["Crecimiento", "IDENTIFICACION"] if "Crecimiento" in resumen.index else 0
 
         porcentaje_rent = (empresas_rent / total_empresas) * 100 if total_empresas else 0
         porcentaje_crec = (empresas_crec / total_empresas) * 100 if total_empresas else 0
 
-        patrimonio_rent = resumen.loc["Rentabilizar", "Patrimonio"] if "Rentabilizar" in resumen.index else 0
-        personal_rent = resumen.loc["Rentabilizar", "Personal"] if "Rentabilizar" in resumen.index else 0
+        patrimonio_rent = resumen.loc["Rentabilizar", "PATRIMONIO"] if "Rentabilizar" in resumen.index else 0
+        personal_rent = resumen.loc["Rentabilizar", "PERSONAL"] if "Rentabilizar" in resumen.index else 0
 
-        patrimonio_crec = resumen.loc["Crecimiento", "Patrimonio"] if "Crecimiento" in resumen.index else 0
-        personal_crec = resumen.loc["Crecimiento", "Personal"] if "Crecimiento" in resumen.index else 0
+        patrimonio_crec = resumen.loc["Crecimiento", "PATRIMONIO"] if "Crecimiento" in resumen.index else 0
+        personal_crec = resumen.loc["Crecimiento", "PERSONAL"] if "Crecimiento" in resumen.index else 0
 
 
         col1, col2 = st.columns(2)
@@ -298,10 +276,10 @@ if "resultados" in st.session_state:
             st.metric("Promedio Personal", f"{personal_crec:.0f} empleados")
 
         # Top CIIU
-        descripcion_ciiu = df_filtrado_final[['Codigo_CIIU', 'Descripcion_CIIU']].drop_duplicates(subset='Codigo_CIIU')
-        top_ciiu = df_filtrado_final['Codigo_CIIU'].value_counts().head(5).reset_index()
-        top_ciiu.columns = ['Codigo_CIIU', 'Cantidad']
-        top_ciiu = top_ciiu.merge(descripcion_ciiu, how='left', on='Codigo_CIIU')
+        descripcion_ciiu = df_filtrado_final[['CIIU', 'DESCRIPCION_CIIU']].drop_duplicates(subset='CIIU')
+        top_ciiu = df_filtrado_final['CIIU'].value_counts().head(5).reset_index()
+        top_ciiu.columns = ['CIIU', 'Cantidad']
+        top_ciiu = top_ciiu.merge(descripcion_ciiu, how='left', on='CIIU')
 
         st.subheader("Top 5 Códigos CIIU más frecuentes")
         st.dataframe(top_ciiu)
