@@ -29,7 +29,13 @@ def preparar_datos(df_nits, df_base):
 
     # Filtrar base por los NITs
     df_resultado = df_base[df_base['IDENTIFICACION'].isin(df_nits['IDENTIFICACION'])].copy()
-    df_resultado = df_resultado[top_features]
+    #convertir a csv
+    #df_resultado.to_csv("df_nits_ingresados.csv", index=False, sep=";", decimal=",")
+    
+    return df_resultado
+
+def agregar_variables(df_resultado):
+    df_resultado = df_resultado[top_features].copy()
     
     #creamos columna target = 1
     df_resultado['TARGET'] = 1
@@ -52,27 +58,17 @@ def muestreo_estratificado(df_resultado, df_base):
     Retorna:
     - DataFrame con la muestra estratificada.
     """
-
-    df_base = df_base.copy()
-
-    # Asegurarse de que las columnas estén en mayúsculas
-    df_base.columns = df_base.columns.str.upper()
-
-    # Definir las columnas de sector (one-hot)
-    cols_sector = ['SEGMENTO_COMERCIAL_GOBIERNO', 'SEGMENTO_COMERCIAL_GRANDES', 'SEGMENTO_COMERCIAL_NEGOCIOS']
-
-    # Reconstruir variable 'SECTOR'
-    df_base['SECTOR'] = df_base[cols_sector].idxmax(axis=1).str.replace('SEGMENTO_COMERCIAL_', '', regex=False)
-
-    # Tamaño deseado: 3 veces el tamaño del df_resultado
+    df_base = df_base[~df_base['IDENTIFICACION'].isin(df_resultado['IDENTIFICACION'])].copy()
+    # Tamaño deseado: 2 veces el tamaño del df_resultado
     n_total = 3 * len(df_resultado)
-
+    #Eliminar identificaciones de df_base de los que estan en df_resultado
+    
     # Calcular proporciones
     proporciones = df_base['SECTOR'].value_counts(normalize=True)
-
+    print("Proporciones de cada clase:\n", proporciones)
     # Calcular cuántas muestras por clase
     muestras_por_clase = (proporciones * n_total).round().astype(int)
- 
+    print("Muestras por clase:\n", muestras_por_clase)
     # Hacer el muestreo estratificado
     df_muestra = (
     df_base.groupby('SECTOR', group_keys=False)
@@ -81,6 +77,8 @@ def muestreo_estratificado(df_resultado, df_base):
                random_state=42
            ))
     )
+    #df_muestra.to_csv("df_muestra.csv",sep=";" ,index=False, decimal=",")
+
     
     df_muestra = df_muestra[top_features]
     
@@ -88,6 +86,7 @@ def muestreo_estratificado(df_resultado, df_base):
     df_muestra['TARGET'] = 0
     #Modificamos columna producto_homologado a no_producto_a_buscar
     df_muestra['PRODUCTO_HOMOLOGADO'] = "NO_PRODUCTO_A_BUSCAR"
+    
     return df_muestra.reset_index(drop=True)
 
 
@@ -103,7 +102,6 @@ def preparar_datos_modelo(df_targets, df_targetn, test_size=0.2, random_state=42
     # Separar características y etiqueta
     X = df_modelo.drop(columns=['PRODUCTO_HOMOLOGADO', 'TARGET'])
     y = df_modelo['TARGET']
-
     # Dividir los datos
     return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
 
@@ -143,19 +141,39 @@ def ajustar_random_forest(X_train, y_train, X_test, y_test, cv=5, n_estimators=1
         'max_features': ['sqrt', 'log2', None]
     }
 
-    model = RandomForestClassifier(n_estimators=n_estimators, random_state=42)
+    model = RandomForestClassifier(n_estimators=n_estimators, random_state=42, class_weight='balanced')
 
     grid_search = GridSearchCV(
         estimator=model,
         param_grid=param_grid,
         cv=cv,
-        scoring='accuracy',
+        scoring='recall',
         n_jobs=-1
     )
     grid_search.fit(X_train, y_train)
     best_model = grid_search.best_estimator_
 
+    best_model.fit(X_train, y_train)
+
+    y_pred = best_model.predict(X_test)
+    y_train_pred = best_model.predict(X_train)
+
+    # Obtener matriz de confusión
+    cm = confusion_matrix(y_test, y_pred)
+
+    # Crear un DataFrame con etiquetas
+    cm_df = pd.DataFrame(cm,
+                        index=["Actual 0", "Actual 1"],
+                        columns=["Predicho 0", "Predicho 1"])
+
+    print("🔍 Matriz de confusión:\n")
+    print(cm_df)
+    print("\n📋 Reporte de clasificación:\n", classification_report(y_test, y_pred))
+    print(f"\n🎯 Accuracy entrenamiento: {accuracy_score(y_train, y_train_pred):.2f}")
+    print(f"🧪 Accuracy test/validación: {accuracy_score(y_test, y_pred):.2f}")
+
     return best_model
+
 def aplicar_modelo(df_nits, df_base, modelo):
     """
     Aplica un modelo entrenado al subconjunto de df_base que no está en df_nits,
@@ -178,7 +196,7 @@ def aplicar_modelo(df_nits, df_base, modelo):
 
     # Filtrar registros no presentes en df_nits
     df_restante = df_base[~df_base['IDENTIFICACION'].isin(df_nits['IDENTIFICACION'])].copy()
-
+    #df_restante = df_base
     # Validar columnas de entrada para predicción
     X_restante = df_restante[top_features].copy()
     # Eliminar la columna 'PRODUCTO_HOMOLOGADO' si existe
@@ -189,8 +207,32 @@ def aplicar_modelo(df_nits, df_base, modelo):
 
     return df_restante
 
-def modelo_principal_rentabilizar(base_secundaria=None, base_principal=None):
+def modelo_rentabilizar(base_secundaria=None, base_principal=None):
+
     df_base_secundaria = preparar_datos(base_secundaria, base_principal)
+    df_muestra_base_principal = muestreo_estratificado(df_resultado=df_base_secundaria, df_base=base_principal)
+
+    df_base_secundaria = agregar_variables(df_base_secundaria)
+
+    X_train, X_test, y_train, y_test = preparar_datos_modelo(df_base_secundaria, df_muestra_base_principal)
+    modelo_ajustado = ajustar_random_forest(X_train, y_train, X_test, y_test)
+    
+    df_resultado = aplicar_modelo(df_nits=base_secundaria, df_base=base_principal, modelo=modelo_ajustado)
+
+    #Cuantos datos tiene probabilidad mayor a 0.5
+    print("Cantidad de datos con probabilidad mayor a 0.5: ", len(df_resultado[df_resultado['PROBABILIDAD'] >= 0.5]))
+    #Cuantos datos tiene probabilidad mayor a 0.7
+    print("Cantidad de datos con probabilidad mayor a 0.7: ", len(df_resultado[df_resultado['PROBABILIDAD'] >= 0.7]))
+
+
+    #df_resultado[df_resultado['PROBABILIDAD'] > 0.5].to_csv("df_resultado_probabilidad.csv", index=False, sep=";", decimal=",")
+    #df_resultado = df_resultado.sort_values(by='PROBABILIDAD', ascending=False).head(8000)
+    df_resultado = df_resultado[df_resultado['PROBABILIDAD'] >= 0.7].reset_index(drop=True)
+
+    return df_resultado
+
+def modelo_principal_rentabilizar_filtro(base_secundaria=None, base_principal=None):
+    df_base_secundaria = agregar_variables(base_secundaria)
     df_muestra_base_principal = muestreo_estratificado(df_resultado=df_base_secundaria, df_base=base_principal)
     X_train, X_test, y_train, y_test = preparar_datos_modelo(df_base_secundaria, df_muestra_base_principal)
     modelo_ajustado = ajustar_random_forest(X_train, y_train, X_test, y_test)
