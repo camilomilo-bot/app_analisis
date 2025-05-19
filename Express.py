@@ -53,7 +53,7 @@ def modelo_principal_crecimiento(base_secundaria=None, base_principal=None):
 
 def obtener_base_clientes():
     #df_clientes = pd.read_csv('../Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
-    df_clientes = pd.read_csv('.files/Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_clientes = pd.read_csv('/files/Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
     df_clientes['IDENTIFICACION'] = df_clientes['IDENTIFICACION'].astype(str)
     df_clientes.columns = df_clientes.columns.str.upper()
     df_clientes['IDENTIFICACION'] = df_clientes['IDENTIFICACION'].astype(str).str.strip()
@@ -63,7 +63,7 @@ def obtener_base_clientes():
     return df_clientes
 
 def obtener_base_cc():
-    df_cc = pd.read_csv('.files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_cc = pd.read_csv('/files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
     
     df_cc['IDENTIFICACION'] = df_cc['IDENTIFICACION'].astype(str)
     return df_cc
