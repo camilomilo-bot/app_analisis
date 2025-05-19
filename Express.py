@@ -1,14 +1,13 @@
+
 import streamlit as st
 import pandas as pd
-import numpy as np
 import time
-from scipy.spatial.distance import cdist
-from sklearn.preprocessing import RobustScaler
 import gc
 import datetime
-from modelo import modelo_principal_rentabilizar
+from modeloRen import modelo_rentabilizar
+from modeloCre import modelo_crecimiento
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Express",layout="wide")
 
 def reiniciar_estado():
     keys = list(st.session_state.keys())
@@ -20,110 +19,93 @@ def limpiar_memoria():
     gc.collect()
 
 def estandarizar_columna_nits(df):
-    df_resultado = df.copy()
-    
-    # Verificar si el archivo tiene encabezados o si el primer registro son datos
-    primera_columna = df_resultado.columns[0]
-    
-    # Verificar si el encabezado parece ser un NIT (dato numérico)
-    es_dato = False
     try:
-        # Si se puede convertir a número o si parece un NIT (solo dígitos)
-        if str(primera_columna).isdigit() or str(primera_columna).replace('.', '').isdigit():
-            es_dato = True
-    except:
-        pass
-    
-    if es_dato:
-        # El encabezado actual es un dato, lo que significa que no hay encabezados reales
-        # Guardamos la primera fila (que está en los encabezados) y restablecemos los índices
-        primer_registro = pd.Series([primera_columna] + list(df_resultado.columns[1:]), 
-                                   name=0)
-        
-        # Crear un nuevo DataFrame con el encabezado correcto
-        nuevas_columnas = ['IDENTIFICACION'] + [f'Columna_{i+2}' for i in range(len(df_resultado.columns)-1)]
-        df_resultado.columns = nuevas_columnas
-        
-        # Añadir el primer registro al principio del DataFrame
-        df_resultado = pd.concat([pd.DataFrame([primer_registro.values], columns=nuevas_columnas), 
-                                 df_resultado]).reset_index(drop=True)
-        
-    else:
-        # El encabezado es un encabezado real, simplemente lo renombramos
-        nuevo_nombre = {primera_columna: 'IDENTIFICACION'}
-        df_resultado = df_resultado.rename(columns=nuevo_nombre)
-    st.write(f"### Paso 1: Leyendo archivo ingresado {len(df_resultado)} NITs.")
-    return df_resultado
+        df_resultado = df.copy()
+        if df_resultado.empty:
+            status.update(label="El archivo cargado está vacío. Por favor, verifique el contenido.", state="error")
+            st.error("El archivo cargado está vacío. Por favor, verifique el contenido.", state="error")
+            return pd.DataFrame()
+        columnas_numericas_posibles = []
+        for col in df_resultado.columns:
+            # Convertir a string, quitar puntos y revisar si la mayoría son números
+            col_sin_na = df_resultado[col].dropna().astype(str).str.replace(".", "", regex=False)
+            proporción_numerica = col_sin_na.str.isdigit().mean()
+            if proporción_numerica > 0.8:  # 80% o más de los valores son numéricos
+                columnas_numericas_posibles.append((col, proporción_numerica))
 
+        if not columnas_numericas_posibles:
+            status.update(label="No se encontró una columna que contenga mayoritariamente identificaciones.", state="error")
+            st.error("No se encontró una columna que contenga mayoritariamente identificaciones.")
+            return pd.DataFrame()
+        # Elegimos la columna con mayor proporción de datos numéricos
+        columna_nits = max(columnas_numericas_posibles, key=lambda x: x[1])[0]
+        df_resultado = df_resultado[[columna_nits]].rename(columns={columna_nits: 'IDENTIFICACION'})
+        st.write(f"### Paso 1: Leyendo archivo ingresado con {len(df_resultado):,}".replace(",", ".") + " identificaciones.")
+
+        return df_resultado
+
+    except Exception as e:
+        st.error(f"Ocurrió un error al procesar el archivo: {str(e)}")
+        return pd.DataFrame()
 def modelo_principal_crecimiento(base_secundaria=None, base_principal=None):
-        base_principal = base_principal.reset_index(drop=True)
-        base_secundaria = base_secundaria.reset_index(drop=True)
-        scaler = RobustScaler()
-        base_secundaria_scaled = scaler.fit_transform(base_secundaria[["PATRIMONIO", "PERSONAL"]])
-        base_principal_scaled = scaler.transform(base_principal[["PATRIMONIO", "PERSONAL"]])
-        distancias = cdist(base_principal_scaled, base_secundaria_scaled, metric="euclidean")
-        mejores_indices = np.argmin(distancias, axis=1)
-        
-        resultados = pd.DataFrame({
-            "IDENTIFICACION": base_principal["IDENTIFICACION"].reset_index(drop=True),
-            "RAZON_SOCIAL": base_principal["RAZON_SOCIAL"].reset_index(drop=True),
-            "TIPO_DOCUMENTO": base_principal["TIPO_DOCUMENTO"].astype(str).str.upper().reset_index(drop=True),
-            "PATRIMONIO": base_principal["PATRIMONIO"].reset_index(drop=True),
-            "PERSONAL": base_principal["PERSONAL"].reset_index(drop=True),
-            "CIIU": base_principal["CIIU"].reset_index(drop=True),
-            "DESCRIPCION_CIIU": base_principal["DESCRIPCION_CIIU"].reset_index(drop=True),
-            "CLIENTE": base_principal["CLIENTE"].reset_index(drop=True),
-            "DISTANCIA": distancias[np.arange(len(base_principal)), mejores_indices],
-            
-        })
-        
-        #organizar resultados desde distanica mayotr a menor
-        resultados = resultados.sort_values(by="DISTANCIA", ascending=True).reset_index(drop=True)
-        resultados["DISTANCIA"] = resultados["DISTANCIA"].round(6)
-        resultados["DISTANCIA"] = [round(0.1 * (i + 1), 1) for i in range(len(resultados))]
-        #tomar solo 5000 registros 
-        resultados = resultados.head(5000)
+        resultados = modelo_crecimiento(base_secundaria=base_secundaria, base_principal=base_principal)
         return resultados
 
 def obtener_base_clientes():
     #df_clientes = pd.read_csv('../Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
-    df_clientes = pd.read_csv('/files/Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_clientes = pd.read_csv('.files/Piramodey360.csv', sep='|', encoding='latin-1', low_memory=False)
     df_clientes['IDENTIFICACION'] = df_clientes['IDENTIFICACION'].astype(str)
     df_clientes.columns = df_clientes.columns.str.upper()
+    df_clientes['IDENTIFICACION'] = df_clientes['IDENTIFICACION'].astype(str).str.strip()
     df_clientes['CLIENTE'] = 1
     #Eliminar duplicados apartir de identificacion
     df_clientes = df_clientes.drop_duplicates(subset=['IDENTIFICACION'])
     return df_clientes
 
 def obtener_base_cc():
-    #df_cc = pd.read_csv('../files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
-    df_cc = pd.read_csv('/files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
+    df_cc = pd.read_csv('.files/BaseCC.csv', sep='|', encoding='latin-1', low_memory=False)
     
     df_cc['IDENTIFICACION'] = df_cc['IDENTIFICACION'].astype(str)
     return df_cc
 
 def aplicar_modelos(base_nits):
-    # Obtener las bases de datos
-    st.write(f"### Paso 2: Obteniendo bases de datos.")
+    # Obtener las bases de datos 
     df_clientes = obtener_base_clientes()
     df_cc = obtener_base_cc()
-    #pasar columna identificacion a object
-    
+    st.write(f"### Paso 2: Cargando Base Potencial.")
     #pasar a mayusculas las columnas de base_principal
     
     df_cc.columns = df_cc.columns.str.upper()
     
     df_base_secundaria = df_clientes[df_clientes['IDENTIFICACION'].isin(base_nits['IDENTIFICACION'])].copy().reset_index(drop=True)
-    st.write(f"### Paso 3: Aplicando modelos.")
-    df_crecimiento = modelo_principal_crecimiento(base_secundaria=df_base_secundaria, base_principal=df_cc)
-    df_rentabilizar = modelo_principal_rentabilizar(base_secundaria=base_nits, base_principal=df_clientes)
-    #df_rentabilizar = modelo_principal_rentabilizar(base_secundaria=df_base_secundaria, base_principal=df_clientes)
-    df_resultados = unificar_bases(df_rentabilizar, df_crecimiento)
-    return df_resultados
+    if len(df_base_secundaria) == 0:
+        status.update(label="No se encontraron identificaciones en la base de clientes.", state="error")
+        st.error("No se encontraron identificaciones en la base de clientes.")
+        return pd.DataFrame()
+    else:
+        st.write(f"### Paso 3: Aplicando modelos.")
+
+        df_crecimiento = modelo_crecimiento(base_secundaria=df_base_secundaria, base_principal=df_cc)
+        df_rentabilizar = modelo_rentabilizar(base_secundaria=base_nits, base_principal=df_clientes)
+        
+
+        df_resultados = unificar_bases(df_rentabilizar, df_crecimiento)
+        return df_resultados
 
 def unificar_bases(df_rentabilizar, df_crecimiento):
     #Columnas deseadas
-    columnas_deseadas = [
+    columnas_deseadas_rent = [
+        "IDENTIFICACION",
+        "RAZON_SOCIAL",
+        "TIPO_DOCUMENTO",
+        "PATRIMONIO",
+        "PERSONAL",
+        "CIIU",
+        "DESCRIPCION_CIIU",
+        "CLIENTE",
+        "PROBABILIDAD",
+    ]
+    columnas_deseadas_cre = [
         "IDENTIFICACION",
         "RAZON_SOCIAL",
         "TIPO_DOCUMENTO",
@@ -135,17 +117,17 @@ def unificar_bases(df_rentabilizar, df_crecimiento):
         "DISTANCIA",
     ]
     #Aplicar las columnas a cada base
-    df_rentabilizar = df_rentabilizar[columnas_deseadas]
-    df_crecimiento = df_crecimiento[columnas_deseadas]
+    df_rentabilizar = df_rentabilizar[columnas_deseadas_rent]
+    df_crecimiento = df_crecimiento[columnas_deseadas_cre]
     
     # Unir las bases de datos de rentabilizar y crecimiento
     df_unificado = pd.concat([df_rentabilizar, df_crecimiento], ignore_index=True)
     return df_unificado
 
 st.title("Perfilador Express")
-st.write("### Sube el archivo con NITs o Identificaciónes")
+st.write("### Sube el archivo con Identificaciónes")
 
-uploaded_file = st.file_uploader("Sube la base con NIT o Identificación", type=["xlsx", "xls"], label_visibility="hidden")
+uploaded_file = st.file_uploader("Sube la base de Identificación", type=["xlsx", "xls"], label_visibility="hidden")
 if uploaded_file:
     if st.button("Generar Recomendaciones"):
         reiniciar_estado()
@@ -153,16 +135,18 @@ if uploaded_file:
         with st.status("Procesando datos... por favor espera.", expanded=True) as status:
             
             base_nits = pd.read_excel(uploaded_file, dtype=str)
-            
-            df_resultados = aplicar_modelos(base_nits=estandarizar_columna_nits(base_nits))
-            if df_resultados.empty:
-                status.update(label="Error: No se encontraron registros en la base de datos.", state="error")
+            base_nits_correguido = estandarizar_columna_nits(base_nits)
+            if len(base_nits_correguido) < 20:
+                status.update(label="Error: La base no cuenta con el minimo necesario para el proceso", state="error")
+                st.error("Error: La base no cuenta con el minimo necesario para el proceso")
             else:
+                df_resultados = aplicar_modelos(base_nits=base_nits_correguido)
                 limpiar_memoria()
-                st.session_state.resultados = df_resultados
-                st.write(f"### Paso 4: Generando base resultado.")
-                status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
-
+                if not df_resultados.empty:
+                    st.session_state.resultados = df_resultados
+                    st.write(f"### Paso 4: Generando base resultado.")
+                    status.update(label=f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos", state="complete")                          
+                    st.success(f"Proceso realizado correctamente en {time.time() - start_time:.2f} segundos")
 if "resultados" in st.session_state:
     resultados = st.session_state.resultados
     
@@ -172,26 +156,16 @@ if "resultados" in st.session_state:
     resultados["DESCRIPCION_CIIU"] = resultados["DESCRIPCION_CIIU"].astype("category")
 
     # Separar y ordenar
-    df_cliente_1 = resultados[resultados["CLIENTE"] == 1].head(20_000).sort_values(by="DISTANCIA")
-    #df_cliente_1 = resultados[resultados["CLIENTE"] == 1].head(20_000)
+    df_cliente_1 = resultados[resultados["CLIENTE"] == 1].sort_values(by="PROBABILIDAD", ascending=False).reset_index(drop=True)
     total_final = int(len(df_cliente_1) / 0.80)
     n_cliente_0 = total_final - len(df_cliente_1)
-    df_cliente_0 = resultados[resultados["CLIENTE"] == 0].sort_values(by="DISTANCIA").head(n_cliente_0)
-    #df_cliente_0 = resultados[resultados["CLIENTE"] == 0].head(n_cliente_0)
+    df_cliente_0 = resultados[resultados["CLIENTE"] == 0].sort_values(by="DISTANCIA", ascending=True).head(n_cliente_0).reset_index(drop=True)
     # Liberar resultados
     del resultados
     limpiar_memoria()
 
-    # Concatenar clientes seleccionados
-    df_filtrado = pd.concat([df_cliente_1, df_cliente_0])
-    del df_cliente_1, df_cliente_0, total_final, n_cliente_0
-    limpiar_memoria()
-   
-    # Datos disponibles
-    grupo = df_filtrado.groupby("CLIENTE")
-    df_rent = grupo.get_group(1)
-    df_crec = grupo.get_group(0)
-
+    df_rent = df_cliente_1
+    df_crec = df_cliente_0
     total_rent = len(df_rent)
     total_crec = len(df_crec)
 
@@ -211,7 +185,6 @@ if "resultados" in st.session_state:
     if num_rent > 0 or num_crec > 0:
         df_rent_sel = df_rent.head(num_rent)
         df_crec_sel = df_crec.head(num_crec)
-        #df_filtrado_final = pd.concat([df_rent_sel, df_crec_sel]).sort_values(by="Distancia")
         df_filtrado_final = pd.concat([df_rent_sel, df_crec_sel])
         del df_rent_sel, df_crec_sel
         limpiar_memoria()
@@ -229,6 +202,9 @@ if "resultados" in st.session_state:
 
         # CSV
         nombre_archivo = f"recomendaciones-{datetime.datetime.now().strftime('%d-%m-%Y')}.csv"
+        #redondear a 8 decimales tanto la columna prababilidad y distancia
+        df_filtrado_final["PROBABILIDAD"] = df_filtrado_final["PROBABILIDAD"].round(6)
+        df_filtrado_final["DISTANCIA"] = df_filtrado_final["DISTANCIA"].round(6)
         csv_data = df_filtrado_final.to_csv(index=False, sep=";", decimal=",", encoding='utf-8')
 
         st.download_button(
@@ -285,5 +261,5 @@ if "resultados" in st.session_state:
         st.dataframe(top_ciiu)
 
         # Limpiar
-        del df_filtrado, df_filtrado_final, df_rent, df_crec, top_ciiu, descripcion_ciiu, resumen
+        del df_filtrado_final, df_rent, df_crec, top_ciiu, descripcion_ciiu, resumen
         limpiar_memoria()
